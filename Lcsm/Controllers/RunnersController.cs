@@ -2,6 +2,7 @@ using AutoMapper;
 using Lcsm.Database.Schema;
 using Lcsm.DataModels;
 using Lcsm.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Lcsm.Controllers;
@@ -11,12 +12,14 @@ namespace Lcsm.Controllers;
 public class RunnersController(IRunnerService runnerService, IMapper mapper) : ControllerBase
 {
     [HttpGet]
+    [Authorize]
     public async Task<IActionResult> List()
     {
         return Ok(await runnerService.ListRunners(CancellationToken.None));
     }
 
     [HttpPut]
+    [Authorize("Administrator")]
     public async Task<IActionResult> Create([FromBody] RunnerUpdateDto dto)
     {
         await runnerService.AddRunner(mapper.Map<Runner>(dto), CancellationToken.None);
@@ -24,6 +27,7 @@ public class RunnersController(IRunnerService runnerService, IMapper mapper) : C
     }
     
     [HttpDelete("{runnerId:int}")]
+    [Authorize("Administrator")]
     public async Task<IActionResult> Delete([FromRoute] int runnerId)
     {
         await runnerService.DeleteRunner(runnerId, CancellationToken.None);
@@ -31,12 +35,14 @@ public class RunnersController(IRunnerService runnerService, IMapper mapper) : C
     }
     
     [HttpGet("{runnerId:int}")]
+    [Authorize]
     public async Task<IActionResult> Get([FromRoute] int runnerId)
     {
         return Ok(await runnerService.GetRunner(runnerId, CancellationToken.None));
     }
     
     [HttpPost("{runnerId:int}")]
+    [Authorize("Administrator")]
     public async Task<IActionResult> Update([FromRoute] int runnerId, [FromBody] RunnerUpdateDto dto)
     {
         var originalRunner = await runnerService.GetRunner(runnerId, CancellationToken.None);

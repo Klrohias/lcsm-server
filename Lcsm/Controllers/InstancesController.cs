@@ -2,6 +2,7 @@ using AutoMapper;
 using Lcsm.DataModels;
 using Lcsm.ServerEngine.ServerManagement.Schema;
 using Lcsm.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Lcsm.Controllers;
@@ -11,6 +12,7 @@ namespace Lcsm.Controllers;
 public class InstancesController(IRunnerService runnerService, IMapper mapper) : ControllerBase
 {
     [HttpGet]
+    [Authorize]
     public async Task<IActionResult> List([FromRoute] int runnerId)
     {
         var protocolClient = await runnerService.GetProtocolClient(runnerId, CancellationToken.None);
@@ -19,6 +21,7 @@ public class InstancesController(IRunnerService runnerService, IMapper mapper) :
     }
 
     [HttpGet("{instanceId:int}")]
+    [Authorize]
     public async Task<IActionResult> Get([FromRoute] int runnerId, [FromRoute] int instanceId)
     {
         var protocolClient = await runnerService.GetProtocolClient(runnerId, CancellationToken.None);
@@ -27,6 +30,7 @@ public class InstancesController(IRunnerService runnerService, IMapper mapper) :
     }
 
     [HttpPut]
+    [Authorize("Administrator")]
     public async Task<IActionResult> Create([FromRoute] int runnerId, [FromBody] InstanceUpdateDto options)
     {
         var protocolClient = await runnerService.GetProtocolClient(runnerId, CancellationToken.None);
@@ -37,6 +41,7 @@ public class InstancesController(IRunnerService runnerService, IMapper mapper) :
     }
 
     [HttpDelete("{instanceId:int}")]
+    [Authorize("Administrator")]
     public async Task<IActionResult> Delete([FromRoute] int runnerId, [FromRoute] int instanceId)
     {
         var protocolClient = await runnerService.GetProtocolClient(runnerId, CancellationToken.None);
@@ -46,6 +51,7 @@ public class InstancesController(IRunnerService runnerService, IMapper mapper) :
     }
 
     [HttpPost("{instanceId:int}")]
+    [Authorize]
     public async Task<IActionResult> Update(
         [FromRoute] int runnerId,
         [FromRoute] int instanceId,

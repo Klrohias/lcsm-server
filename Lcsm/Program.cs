@@ -1,10 +1,13 @@
+using System.Text;
 using Lcsm.Database;
 using Lcsm.Database.Schema;
 using Lcsm.DataModels;
 using Lcsm.ServerEngine.Protocol;
 using Lcsm.ServerEngine.ServerManagement.Schema;
 using Lcsm.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using NLog;
 using NLog.Web;
 
@@ -22,12 +25,33 @@ class Program
         {
             // ASP.NET Core: start building
             var builder = WebApplication.CreateBuilder(args);
-
+            
+            // LCSM: configure controllers and openapi
             builder.Services.AddControllers();
             builder.Services.AddOpenApi();
 
             ConfigureServices(builder.Services);
             ConfigureAutoMapper(builder.Services);
+            
+            // LCSM: configure auth
+            builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+                .AddJwtBearer(options =>
+                {
+                    var issuerSigningKey =
+                        Encoding.Default.GetBytes(builder.Configuration["JwtSettings:IssuerSigningKey"] ?? "default");
+                    options.TokenValidationParameters = new TokenValidationParameters
+                    {
+                        ValidateIssuerSigningKey = true,
+                        ValidIssuers = builder.Configuration.GetSection("JwtSettings:ValidIssuers").Get<string[]>(),
+                        ValidAudiences = builder.Configuration.GetSection("JwtSettings:ValidAudiences").Get<string[]>(),
+                        IssuerSigningKey = new SymmetricSecurityKey(issuerSigningKey)
+                    };
+                });
+
+            builder.Services.AddAuthorization(x =>
+            {
+                x.AddPolicy("Administrator", y => y.RequireRole("Administrator").Build());
+            });
           
             // NLog: Configure
             builder.Logging.ClearProviders();
@@ -46,16 +70,20 @@ class Program
             
             var app = builder.Build();
 
-            // Configure the HTTP request pipeline.
+            // LCSM: configure middlewares
             if (app.Environment.IsDevelopment())
             {
                 app.MapOpenApi();
                 app.UseSwagger();
                 app.UseSwaggerUI();
             }
-
+            
+            app.UseAuthentication();
+            app.UseAuthorization();
+            
             app.MapControllers();
             app.UseHttpsRedirection();
+            
             
             app.Run();
         } catch (Exception exception)
@@ -83,7 +111,7 @@ class Program
 
     private static void ConfigureServices(IServiceCollection service)
     {
-        service.AddScoped<IUserService, UserService>();
+        service.AddScoped<ITokenService, TokenService>();
         service.AddScoped<IRunnerService, RunnerService>();
         service.AddSingleton<IBuiltinRunnerService, BuiltinRunnerService>();
     }
