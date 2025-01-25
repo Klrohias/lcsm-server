@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lcsm", "Lcsm\Lcsm.csproj", "{C4A421D9-D331-4053-A342-0E3CB188084F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lcsm.ServerEngine", "Lcsm.ServerEngine\Lcsm.ServerEngine.csproj", "{490BA018-10D5-4064-BA5D-FCCD70B2A568}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lcsm.Runner", "Lcsm.Runner\Lcsm.Runner.csproj", "{E14B26AD-19FA-4392-AF37-565387551A90}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C4A421D9-D331-4053-A342-0E3CB188084F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C4A421D9-D331-4053-A342-0E3CB188084F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C4A421D9-D331-4053-A342-0E3CB188084F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C4A421D9-D331-4053-A342-0E3CB188084F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{490BA018-10D5-4064-BA5D-FCCD70B2A568}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{490BA018-10D5-4064-BA5D-FCCD70B2A568}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{490BA018-10D5-4064-BA5D-FCCD70B2A568}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{490BA018-10D5-4064-BA5D-FCCD70B2A568}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E14B26AD-19FA-4392-AF37-565387551A90}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E14B26AD-19FA-4392-AF37-565387551A90}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E14B26AD-19FA-4392-AF37-565387551A90}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E14B26AD-19FA-4392-AF37-565387551A90}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
