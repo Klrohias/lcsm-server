@@ -8,7 +8,7 @@ public class User
 {
     public int Id { get; set; }
 
-    [StringLength(32)] public string Name { get; set; }
+    [StringLength(32)] public string Username { get; set; }
 
     public string Password { get; set; }
 

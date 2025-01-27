@@ -1,11 +1,11 @@
 using Lcsm.Database.Schema;
-using Lcsm.ServerEngine.Protocol;
+using Lcsm.RunnerEngine.Protocol;
 
 namespace Lcsm.Services;
 
 public interface IRunnerService
 {
-    public Task<ProtocolClient> GetProtocolClient(int runnerId, CancellationToken cancellationToken);
+    public Task<RpcClient?> GetRpcClient(int runnerId, CancellationToken cancellationToken);
     
     public Task<Runner?> GetRunner(int runnerId, CancellationToken cancellationToken);
     

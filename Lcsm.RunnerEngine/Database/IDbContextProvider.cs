@@ -1,4 +1,4 @@
-namespace Lcsm.ServerEngine.ServerManagement;
+namespace Lcsm.RunnerEngine.Database;
 
 public interface IDbContextProvider
 {

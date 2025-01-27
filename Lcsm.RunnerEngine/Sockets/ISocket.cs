@@ -1,4 +1,4 @@
-namespace Lcsm.ServerEngine.Sockets;
+namespace Lcsm.RunnerEngine.Sockets;
 
 public interface ISocket
 {

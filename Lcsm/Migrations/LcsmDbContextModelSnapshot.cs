@@ -53,13 +53,13 @@ namespace Lcsm.Migrations
                     b.Property<bool>("IsAdministrator")
                         .HasColumnType("INTEGER");
 
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("Password")
                         .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(32)
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
@@ -67,7 +67,7 @@ namespace Lcsm.Migrations
                     b.ToTable("Users");
                 });
 
-            modelBuilder.Entity("Lcsm.ServerEngine.ServerManagement.Schema.Instance", b =>
+            modelBuilder.Entity("Lcsm.RunnerEngine.Database.Schema.Instance", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()

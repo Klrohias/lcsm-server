@@ -10,8 +10,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Lcsm.Migrations
 {
     [DbContext(typeof(LcsmDbContext))]
-    [Migration("20250125141022_AddRunnerName")]
-    partial class AddRunnerName
+    [Migration("20250126115333_Initial")]
+    partial class Initial
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -56,13 +56,13 @@ namespace Lcsm.Migrations
                     b.Property<bool>("IsAdministrator")
                         .HasColumnType("INTEGER");
 
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("Password")
                         .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(32)
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
@@ -70,7 +70,7 @@ namespace Lcsm.Migrations
                     b.ToTable("Users");
                 });
 
-            modelBuilder.Entity("Lcsm.ServerEngine.ServerManagement.Schema.Instance", b =>
+            modelBuilder.Entity("Lcsm.RunnerEngine.ServerManagement.Schema.Instance", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()

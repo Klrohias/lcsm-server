@@ -1,8 +1,8 @@
 using System.ComponentModel.DataAnnotations;
 
-namespace Lcsm.ServerEngine.Protocol;
+namespace Lcsm.RunnerEngine.Protocol.Models;
 
-public class InstanceUpdatePacket
+public class InstanceDto
 {
     public int? Id { get; set; }
     
@@ -11,4 +11,6 @@ public class InstanceUpdatePacket
     [StringLength(512)] public string? LaunchCommand { get; set; } = "";
     
     [StringLength(512)] public string? WorkingDirectory { get; set; }
+    
+    public bool IsRunning { get; set; }
 }

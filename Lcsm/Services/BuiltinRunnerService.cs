@@ -1,39 +1,39 @@
 using Lcsm.Common;
-using Lcsm.ServerEngine;
-using Lcsm.ServerEngine.Protocol;
-using Lcsm.ServerEngine.Sockets;
+using Lcsm.RunnerEngine;
+using Lcsm.RunnerEngine.Protocol;
+using Lcsm.RunnerEngine.Sockets;
 
 namespace Lcsm.Services;
 
 public class BuiltinRunnerService : IBuiltinRunnerService
 {
-    public bool Started => _embedServer.Started;
+    public bool Started => _embedEngine.Started;
     public IConnection Connection => _internalSocket.ClientConnection;
-    
-    private readonly EmbedServer _embedServer;
+
+    private readonly EmbedEngine _embedEngine;
     private readonly InternalSocket _internalSocket = new();
 
     public BuiltinRunnerService(IServiceScopeFactory scopeFactory, IConfiguration configuration,
-        ILogger<EmbedServer> loggerForEmbedServer)
+        ILogger<EmbedEngine> loggerForEmbedServer)
     {
         var databaseProvider = new LcsmDatabaseProvider(scopeFactory);
 
-        _embedServer = new EmbedServer(
+        _embedEngine = new EmbedEngine(
             managedSocket: _internalSocket,
             dataDirectory: configuration["DataDirectory"] ?? Path.Combine(AppContext.BaseDirectory, "./Data/"),
             dbProvider: databaseProvider,
             logger: loggerForEmbedServer);
 
-        _embedServer.Start();
+        _embedEngine.Start();
     }
 
     public void Start()
     {
-        _embedServer.Start();
+        _embedEngine.Start();
     }
 
     public void Stop()
     {
-        _embedServer.Stop();
+        _embedEngine.Stop();
     }
 }

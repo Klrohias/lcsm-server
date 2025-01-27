@@ -1,7 +1,7 @@
-using Lcsm.ServerEngine.ServerManagement.Schema;
+using Lcsm.RunnerEngine.Database.Schema;
 using Microsoft.EntityFrameworkCore;
 
-namespace Lcsm.ServerEngine.ServerManagement;
+namespace Lcsm.RunnerEngine.Database;
 
 public interface IDbContext : IDisposable
 {

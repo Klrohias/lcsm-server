@@ -1,22 +1,22 @@
 using Lcsm.Database;
 using Lcsm.Database.Schema;
-using Lcsm.ServerEngine.Protocol;
+using Lcsm.RunnerEngine.Protocol;
 using Microsoft.EntityFrameworkCore;
 
 namespace Lcsm.Services;
 
 public class RunnerService(LcsmDbContext dbContext, IBuiltinRunnerService builtinRunnerService) : IRunnerService
 {
-    public async Task<ProtocolClient> GetProtocolClient(int runnerId, CancellationToken cancellationToken)
+    public async Task<RpcClient?> GetRpcClient(int runnerId, CancellationToken cancellationToken)
     {
         var runner = await GetRunner(runnerId, cancellationToken);
         
         if (runner?.SocketType == RunnerType.Builtin)
         {
-            return new ProtocolClient(builtinRunnerService.Connection);
+            return new RpcClient(builtinRunnerService.Connection);
         }
 
-        throw new NotSupportedException();
+        return null;
     }
 
     public Task<Runner?> GetRunner(int runnerId, CancellationToken cancellationToken)

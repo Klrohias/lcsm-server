@@ -2,8 +2,9 @@ using System.Text;
 using Lcsm.Database;
 using Lcsm.Database.Schema;
 using Lcsm.DataModels;
-using Lcsm.ServerEngine.Protocol;
-using Lcsm.ServerEngine.ServerManagement.Schema;
+using Lcsm.RunnerEngine.Database.Schema;
+using Lcsm.RunnerEngine.Protocol;
+using Lcsm.RunnerEngine.Protocol.Models;
 using Lcsm.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -106,12 +107,15 @@ class Program
         {
             x.CreateMap<RunnerUpdateDto, Runner>();
             x.CreateMap<InstanceUpdateDto, Instance>();
+            x.CreateMap<InstanceDto, Instance>();
+            x.CreateMap<User, User>()
+                .ForMember(x => x.Password, opt => opt.Ignore());
         });
     }
 
     private static void ConfigureServices(IServiceCollection service)
     {
-        service.AddScoped<ITokenService, TokenService>();
+        service.AddScoped<IUserService, UserService>();
         service.AddScoped<IRunnerService, RunnerService>();
         service.AddSingleton<IBuiltinRunnerService, BuiltinRunnerService>();
     }

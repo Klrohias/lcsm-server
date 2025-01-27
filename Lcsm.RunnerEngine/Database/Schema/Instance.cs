@@ -1,7 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Microsoft.EntityFrameworkCore;
 
-namespace Lcsm.ServerEngine.ServerManagement.Schema;
+namespace Lcsm.RunnerEngine.Database.Schema;
 
 [PrimaryKey(nameof(Id))]
 public class Instance

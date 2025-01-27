@@ -4,6 +4,7 @@ using Lcsm.DataModels;
 using Lcsm.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using SystemTextJsonPatch;
 
 namespace Lcsm.Controllers;
 
@@ -43,10 +44,13 @@ public class RunnersController(IRunnerService runnerService, IMapper mapper) : C
     
     [HttpPost("{runnerId:int}")]
     [Authorize("Administrator")]
-    public async Task<IActionResult> Update([FromRoute] int runnerId, [FromBody] RunnerUpdateDto dto)
+    public async Task<IActionResult> Update([FromRoute] int runnerId, [FromBody] JsonPatchDocument<Runner> patch)
     {
         var originalRunner = await runnerService.GetRunner(runnerId, CancellationToken.None);
-        await runnerService.UpdateRunner(mapper.Map(dto, originalRunner)!, CancellationToken.None);
+        if (originalRunner == null) return NotFound("Runner not found");
+        
+        patch.ApplyTo(originalRunner);
+        await runnerService.UpdateRunner(originalRunner, CancellationToken.None);
         
         return Ok();
     }

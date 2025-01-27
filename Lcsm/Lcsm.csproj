@@ -8,6 +8,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
         <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.1" />
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.0"/>
         <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.1" />
@@ -25,6 +26,7 @@
         <PackageReference Include="NLog.Extensions.Logging" Version="5.3.15" />
         <PackageReference Include="NLog.Web.AspNetCore" Version="5.3.15" />
         <PackageReference Include="Swashbuckle.AspNetCore" Version="7.2.0" />
+        <PackageReference Include="SystemTextJsonPatch" Version="4.2.0" />
     </ItemGroup>
 
     <ItemGroup>
@@ -34,13 +36,7 @@
     </ItemGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\Lcsm.ServerEngine\Lcsm.ServerEngine.csproj" />
-    </ItemGroup>
-
-    <ItemGroup>
-      <None Update="lcsm.db">
-        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      </None>
+      <ProjectReference Include="..\Lcsm.RunnerEngine\Lcsm.RunnerEngine.csproj" />
     </ItemGroup>
 
 </Project>

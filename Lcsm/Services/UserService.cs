@@ -2,18 +2,19 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using Lcsm.Database;
+using Lcsm.Database.Schema;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using JwtRegisteredClaimNames = Microsoft.IdentityModel.JsonWebTokens.JwtRegisteredClaimNames;
 
 namespace Lcsm.Services;
 
-public class TokenService(IConfiguration configuration) : ITokenService
+public class UserService(IConfiguration configuration, LcsmDbContext dbContext) : IUserService
 {
     public string IssueToken(string username, string role)
     {
         var claims = new[]
         {
-            new Claim(JwtRegisteredClaimNames.Sub, username),
+            new Claim(ClaimTypes.Name, username),
             new Claim(ClaimTypes.Role, role)
         };
         
@@ -34,5 +35,16 @@ public class TokenService(IConfiguration configuration) : ITokenService
         );
 
         return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    public Task<User?> GetUser(string username, CancellationToken cancellationToken)
+    {
+        return dbContext.Users.FirstOrDefaultAsync(x => x.Username == username, cancellationToken);
+    }
+
+    public async Task AddUser(User user, CancellationToken cancellationToken)
+    {
+        await dbContext.Users.AddAsync(user, cancellationToken);
+        await dbContext.SaveChangesAsync(cancellationToken);
     }
 }
