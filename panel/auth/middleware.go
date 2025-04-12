@@ -1,46 +1,57 @@
 package auth
 
 import (
-	"net/http"
 	"strings"
 
-	"github.com/gin-gonic/gin"
+	"github.com/gofiber/fiber/v2"
 )
 
-func JwtAuthMiddleware(jwt *JwtContext) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		authorization := c.GetHeader("Authorization")
+const claimsKey string = "claims"
+
+func PutClaims(c *fiber.Ctx, claims *Claims) {
+	c.Context().SetUserValue(claimsKey, claims)
+}
+
+func GetClaims(c *fiber.Ctx) *Claims {
+	obj, ok := c.Context().UserValue(claimsKey).(*Claims)
+	if !ok {
+		return nil
+	}
+
+	return obj
+}
+
+func JwtAuthMiddleware(jwt *JwtContext) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		authorization := c.Get("Authorization")
 		if authorization == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
-			return
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Authorization header is required"})
 		}
 
 		parts := strings.Split(authorization, " ")
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization format"})
-			return
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid authorization format"})
 		}
 
 		tokenString := parts[1]
 		claims, err := jwt.ParseToken(tokenString)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
-			return
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid or expired token"})
 		}
 
 		// Save claims in the request context
-		c.Request = c.Request.WithContext(NewContextWithClaims(c.Request.Context(), claims))
-		c.Next()
+		PutClaims(c, claims)
+
+		return c.Next()
 	}
 }
 
-func AdminRoleMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		claims := GetClaimsFromContext(c.Request.Context())
+func AdminRoleMiddleware() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		claims := GetClaims(c)
 		if claims == nil || claims.Role != "admin" {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Admin privileges required"})
-			return
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Admin privileges required"})
 		}
-		c.Next()
+		return c.Next()
 	}
 }

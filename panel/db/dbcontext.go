@@ -7,6 +7,8 @@ import (
 	"github.com/klrohias/lcsm-server/panel/models"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+
+	runnerModels "github.com/klrohias/lcsm-server/runner/models"
 )
 
 type DbContext struct {
@@ -25,7 +27,7 @@ func NewDbContext() (*DbContext, error) {
 	}
 
 	// Migrate models
-	if err := db.AutoMigrate(&models.User{}, &models.Runner{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Runner{}, &runnerModels.Instance{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %v", err)
 	}
 

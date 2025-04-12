@@ -1,118 +1,103 @@
 package controllers
 
 import (
-	"net/http"
 	"strconv"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/klrohias/lcsm-server/common"
 	"github.com/klrohias/lcsm-server/panel/db"
 	"github.com/klrohias/lcsm-server/panel/models"
-
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 type RunnerController struct {
-	db *gorm.DB
+	db     *gorm.DB
+	logger common.Logger
 }
 
-func NewRunnerController(db *db.DbContext) *RunnerController {
-	return &RunnerController{db: db.DB}
+func NewRunnerController(db *db.DbContext,
+	logger common.Logger,
+) *RunnerController {
+	return &RunnerController{
+		db:     db.DB,
+		logger: logger,
+	}
 }
 
-func (c *RunnerController) GetRunners(ctx *gin.Context) {
+func (c *RunnerController) GetRunners(ctx *fiber.Ctx) error {
 	var runners []models.Runner
 	if err := c.db.Find(&runners).Error; err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		c.logger.Debugf("Error getting runners: %v", err)
+		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	ctx.JSON(http.StatusOK, runners)
+	return ctx.Status(fiber.StatusOK).JSON(runners)
 }
 
-func (c *RunnerController) CreateRunner(ctx *gin.Context) {
+func (c *RunnerController) CreateRunner(ctx *fiber.Ctx) error {
 	var runner models.Runner
-	if err := ctx.ShouldBindJSON(&runner); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	if err := ctx.BodyParser(&runner); err != nil {
+		c.logger.Debugf("Error parsing runner: %v", err)
+		return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	if err := c.db.Create(&runner).Error; err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		c.logger.Debugf("Error creating runner: %v", err)
+		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	ctx.JSON(http.StatusCreated, runner)
+	return ctx.Status(fiber.StatusCreated).JSON(runner)
 }
 
-func (c *RunnerController) UpdateRunner(ctx *gin.Context) {
-	id, err := strconv.ParseUint(ctx.Param("id"), 10, 32)
+func (c *RunnerController) UpdateRunner(ctx *fiber.Ctx) error {
+	id, err := strconv.ParseUint(ctx.Params("id"), 10, 32)
 	if err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
-		return
+		c.logger.Debugf("Error parsing id: %v", err)
+		return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
 
 	var runner models.Runner
-	if err := c.db.First(&runner, uint(id)).Error; err != nil {
-		ctx.JSON(http.StatusNotFound, gin.H{"error": "runner not found"})
-		return
+	if err = c.db.First(&runner, uint(id)).Error; err != nil {
+		c.logger.Debugf("Error getting runner: %v", err)
+		return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "runner not found"})
 	}
 
-	var patches []map[string]interface{}
-	if err := ctx.ShouldBindJSON(&patches); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	// Patch
+	patchData := ctx.Body()
+	if err = common.ApplyJsonPatch(&runner, patchData); err != nil {
+		c.logger.Debugf("Error patching runner: %v", err)
+		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "jsonpatch error"})
 	}
 
-	for _, patch := range patches {
-		op := patch["op"].(string)
-		path := patch["path"].(string)
-		value := patch["value"]
-
-		switch op {
-		case "replace":
-			switch path {
-			case "/type":
-				runner.Type = models.RunnerType(value.(string))
-			case "/endpoint":
-				runner.Endpoint = value.(string)
-			case "/name":
-				runner.Name = value.(string)
-			case "/description":
-				runner.Description = value.(string)
-			default:
-				ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid path"})
-				return
-			}
-		default:
-			ctx.JSON(http.StatusBadRequest, gin.H{"error": "unsupported operation"})
-			return
-		}
+	if uint64(runner.ID) != id {
+		return ctx.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "id changed"})
 	}
 
+	// Save
 	if err := c.db.Save(&runner).Error; err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		c.logger.Debugf("Error saving runner: %v", err)
+		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 
-	ctx.JSON(http.StatusOK, runner)
+	return ctx.Status(fiber.StatusOK).JSON(runner)
 }
 
-func (c *RunnerController) DeleteRunner(ctx *gin.Context) {
-	id, err := strconv.ParseUint(ctx.Param("id"), 10, 32)
+func (c *RunnerController) DeleteRunner(ctx *fiber.Ctx) error {
+	id, err := strconv.ParseUint(ctx.Params("id"), 10, 32)
 	if err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
-		return
+		c.logger.Debugf("Error parsing id: %v", err)
+		return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
 
 	var runner models.Runner
 	if err := c.db.First(&runner, uint(id)).Error; err != nil {
-		ctx.JSON(http.StatusNotFound, gin.H{"error": "runner not found"})
-		return
+		c.logger.Debugf("Error getting runner: %v", err)
+		return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "runner not found"})
 	}
 
 	if err := c.db.Delete(&runner).Error; err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		c.logger.Debugf("Error deleting runner: %v", err)
+		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"message": "runner deleted"})
+	return ctx.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Runner deleted successfully"})
 }

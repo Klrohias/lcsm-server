@@ -5,13 +5,13 @@ import (
 	"log"
 	"os"
 
-	"github.com/gin-gonic/gin"
+	"github.com/gofiber/fiber/v2"
 	"github.com/joho/godotenv"
 
 	"github.com/klrohias/lcsm-server/panel/auth"
 )
 
-var app *AppContext
+var appContext *AppContext
 
 func initDotenv() error {
 	if err := godotenv.Load(); err != nil {
@@ -26,15 +26,20 @@ func initJwt() error {
 		return fmt.Errorf("JWT_SECRET is not set")
 	}
 
-	app.JwtContext.SetJwtSecret(jwtSecret)
+	appContext.JwtContext.SetJwtSecret(jwtSecret)
 
 	return nil
 }
 
-func preloadAllEnvironment() {
+func prepareContext() {
+	// Init environment
+	if err := initDotenv(); err != nil {
+		log.Printf("Warning: %v", err)
+	}
+
 	// Init AppContext
 	var err error
-	if app, err = PanelNewContext(); err != nil {
+	if appContext, err = BuildAppContext(); err != nil {
 		log.Fatalf("Cannot new AppContext: %v", err)
 	}
 
@@ -44,61 +49,63 @@ func preloadAllEnvironment() {
 	}
 }
 
-func createRouters() *gin.Engine {
-	r := gin.Default()
+func createRouters() *fiber.App {
+	app := fiber.New()
 
 	// Initialize controllers
-	userController := app.UserController
-	runnerController := app.RunnerController
-	systemController := app.SystemController
+	userController := appContext.UserController
+	runnerController := appContext.RunnerController
+	systemController := appContext.SystemController
+	instanceController := appContext.InstanceController
 
 	// Initialize Middlewares
-	jwtAuthMiddleware := auth.JwtAuthMiddleware(app.JwtContext)
+	jwtAuthMiddleware := auth.JwtAuthMiddleware(appContext.JwtContext)
 	adminRoleMiddleware := auth.AdminRoleMiddleware()
 
 	// Default routes
-	r.GET("/Health", systemController.SystemHealth)
+	app.Get("/Health", systemController.SystemHealth)
 
 	// User routes
-	userGroup := r.Group("/User")
+	userGroup := app.Group("/User")
 	{
-		userGroup.POST("/Authenticate", userController.Authenticate)
-		userGroup.GET("", jwtAuthMiddleware, userController.CurrentUser)
+		userGroup.Post("/Authenticate", userController.Authenticate)
+		userGroup.Get("", jwtAuthMiddleware, userController.CurrentUser)
 	}
 
 	// Runner routes (protected)
-	runnerGroup := r.Group("/Runners", jwtAuthMiddleware, adminRoleMiddleware)
+	runnerGroup := app.Group("/Runners", jwtAuthMiddleware, adminRoleMiddleware)
 	{
-		runnerGroup.GET("", runnerController.GetRunners)
-		runnerGroup.PUT("", runnerController.CreateRunner)
-		runnerGroup.POST("/:id", runnerController.UpdateRunner)
-		runnerGroup.DELETE("/:id", runnerController.DeleteRunner)
+		runnerGroup.Get("", runnerController.GetRunners)
+		runnerGroup.Put("", runnerController.CreateRunner)
+		runnerGroup.Post("/:id", runnerController.UpdateRunner)
+		runnerGroup.Delete("/:id", runnerController.DeleteRunner)
 	}
 
-	return r
+	// Instance routes
+	// TODO
+	instanceGroup := app.Group("/Instances/:runnerId", jwtAuthMiddleware)
+	{
+		instanceGroup.Get("", instanceController.GetInstances)
+	}
+
+	return app
 }
 
 func startWebServer() {
-	r := createRouters()
+	app := createRouters()
 
 	// Launch server
 	listenAddr := os.Getenv("LISTEN_ADDR")
 	if listenAddr == "" {
-		listenAddr = "8080"
+		listenAddr = ":8080"
 	}
 
-	if err := r.Run(listenAddr); err != nil {
+	if err := app.Listen(listenAddr); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
 
 func main() {
-	// Init environment
-	if err := initDotenv(); err != nil {
-		log.Printf("Warning: %v", err)
-	}
-
-	// Startup
-	preloadAllEnvironment()
+	prepareContext()
 	startWebServer()
 }

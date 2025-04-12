@@ -8,36 +8,46 @@ package main
 
 import (
 	"github.com/google/wire"
+	"github.com/klrohias/lcsm-server/common"
 	"github.com/klrohias/lcsm-server/panel/auth"
 	"github.com/klrohias/lcsm-server/panel/controllers"
 	"github.com/klrohias/lcsm-server/panel/db"
+	"github.com/klrohias/lcsm-server/panel/services"
 )
 
 // Injectors from app.go:
 
-func PanelNewContext() (*AppContext, error) {
+func BuildAppContext() (*AppContext, error) {
 	dbContext, err := db.NewDbContext()
 	if err != nil {
 		return nil, err
 	}
 	jwtContext := auth.NewJwtContext()
-	userController := controllers.NewUserController(dbContext, jwtContext)
-	runnerController := controllers.NewRunnerController(dbContext)
-	systemController := controllers.NewSystemController(dbContext)
-	appContext := NewAppContext(dbContext, jwtContext, userController, runnerController, systemController)
-	return appContext, nil
+	defaultLogger := common.NewDefaultLogger()
+	userController := controllers.NewUserController(dbContext, jwtContext, defaultLogger)
+	runnerController := controllers.NewRunnerController(dbContext, defaultLogger)
+	systemController := controllers.NewSystemController(dbContext, defaultLogger)
+	runnerService := services.NewRunnerService(dbContext)
+	instanceController := controllers.NewInstanceController(dbContext, runnerService, defaultLogger)
+	mainAppContext := NewAppContext(dbContext, jwtContext, userController, runnerController, systemController, instanceController, runnerService, defaultLogger)
+	return mainAppContext, nil
 }
 
 // app.go:
 
-var ControllerSet = wire.NewSet(controllers.NewUserController, controllers.NewRunnerController, controllers.NewSystemController)
+var ControllerSet = wire.NewSet(controllers.NewUserController, controllers.NewRunnerController, controllers.NewSystemController, controllers.NewInstanceController)
+
+var ServiceSet = wire.NewSet(services.NewRunnerService)
 
 type AppContext struct {
-	DbContext        *db.DbContext
-	JwtContext       *auth.JwtContext
-	UserController   *controllers.UserController
-	RunnerController *controllers.RunnerController
-	SystemController *controllers.SystemController
+	DbContext          *db.DbContext
+	JwtContext         *auth.JwtContext
+	UserController     *controllers.UserController
+	RunnerController   *controllers.RunnerController
+	SystemController   *controllers.SystemController
+	InstanceController *controllers.InstanceController
+	RunnerService      *services.RunnerService
+	Logger             common.Logger
 }
 
 func NewAppContext(
@@ -45,12 +55,19 @@ func NewAppContext(
 	jwtContext *auth.JwtContext,
 	userController *controllers.UserController,
 	runnerController *controllers.RunnerController,
-	systemController *controllers.SystemController) *AppContext {
+	systemController *controllers.SystemController,
+	instanceController *controllers.InstanceController,
+	runnerService *services.RunnerService,
+	logger common.Logger,
+) *AppContext {
 	return &AppContext{
-		DbContext:        dbContext,
-		JwtContext:       jwtContext,
-		UserController:   userController,
-		RunnerController: runnerController,
-		SystemController: systemController,
+		DbContext:          dbContext,
+		JwtContext:         jwtContext,
+		UserController:     userController,
+		RunnerController:   runnerController,
+		SystemController:   systemController,
+		InstanceController: instanceController,
+		RunnerService:      runnerService,
+		Logger:             logger,
 	}
 }
