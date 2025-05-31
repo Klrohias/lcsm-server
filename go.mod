@@ -1,6 +1,6 @@
 module github.com/klrohias/lcsm-server
 
-go 1.21
+go 1.23.0
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.7
@@ -31,6 +31,6 @@ require (
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.17 // indirect
-	golang.org/x/crypto v0.23.0
-	golang.org/x/sys v0.28.0 // indirect
+	golang.org/x/crypto v0.35.0
+	golang.org/x/sys v0.30.0 // indirect
 )
