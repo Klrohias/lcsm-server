@@ -6,25 +6,25 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/klrohias/lcsm-server/common"
-	"github.com/klrohias/lcsm-server/panel/auth"
 	"github.com/klrohias/lcsm-server/panel/db"
 	"github.com/klrohias/lcsm-server/panel/models"
+	"github.com/klrohias/lcsm-server/panel/services"
 )
 
 type UserController struct {
-	db         *gorm.DB
-	jwtContext *auth.JwtContext
-	logger     common.Logger
+	db          *gorm.DB
+	authService *services.AuthService
+	logger      common.Logger
 }
 
 func NewUserController(db *db.DbContext,
-	jwtContext *auth.JwtContext,
+	authService *services.AuthService,
 	logger common.Logger,
 ) *UserController {
 	return &UserController{
-		db:         db.DB,
-		jwtContext: jwtContext,
-		logger:     logger,
+		db:          db.DB,
+		authService: authService,
+		logger:      logger,
 	}
 }
 
@@ -48,7 +48,7 @@ type UserUpdateRequest struct {
 
 func (uc *UserController) CurrentUser(c *fiber.Ctx) error {
 	// Get claims from context
-	claims := auth.GetClaims(c)
+	claims := services.GetClaims(c)
 	if claims == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
@@ -90,7 +90,7 @@ func (uc *UserController) Authenticate(c *fiber.Ctx) error {
 	}
 
 	// Generate JWT token
-	token, err := uc.jwtContext.GenerateToken(user.Username, string(user.Role))
+	token, err := uc.authService.GenerateToken(user.Username, string(user.Role))
 	if err != nil {
 		uc.logger.Debugf("Failed to generate token: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to generate token"})

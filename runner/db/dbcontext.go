@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/klrohias/lcsm-server/panel/models"
+	"github.com/klrohias/lcsm-server/runner/models"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -16,7 +16,7 @@ type DbContext struct {
 func NewDbContext() (*DbContext, error) {
 	dbPath := os.Getenv("LCSM_DB_PATH")
 	if dbPath == "" {
-		dbPath = "./lcsm.db"
+		dbPath = "./lcsm-node.db"
 	}
 
 	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
@@ -25,7 +25,7 @@ func NewDbContext() (*DbContext, error) {
 	}
 
 	// Migrate models
-	if err := db.AutoMigrate(&models.User{}, &models.Runner{}, &models.Permission{}); err != nil {
+	if err := db.AutoMigrate(&models.Instance{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %v", err)
 	}
 
