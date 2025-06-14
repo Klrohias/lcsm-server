@@ -1,0 +1,30 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "LCSM Panel Server",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/panel/main.go",
+            "env": {
+                "LCSM_DEVELOPMENT": "1",
+                "LCSM_JWT_SECRET": "114514"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "LCSM Node Server",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/runner/main.go",
+            "env": {
+                "LCSM_DEVELOPMENT": "1",
+                "LCSM_LISTEN_ADDR": ":8888",
+                "LCSM_AUTH_TOKEN": "114514"
+            },
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

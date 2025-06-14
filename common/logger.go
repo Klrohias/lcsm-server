@@ -1,6 +1,10 @@
 package common
 
-import "github.com/sirupsen/logrus"
+import (
+	"os"
+
+	"github.com/sirupsen/logrus"
+)
 
 type Logger interface {
 	Debugf(format string, args ...any)
@@ -18,6 +22,11 @@ func NewDefaultLogger() *DefaultLogger {
 	l.SetFormatter(&logrus.TextFormatter{
 		FullTimestamp: true,
 	})
+
+	if _, devMode := os.LookupEnv("LCSM_DEVELOPMENT"); devMode {
+		l.SetLevel(logrus.DebugLevel)
+	}
+
 	return &DefaultLogger{logrus: l}
 }
 

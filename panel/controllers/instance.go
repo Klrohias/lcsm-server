@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/gofiber/fiber/v2"
@@ -28,6 +29,11 @@ func NewInstanceController(
 	}
 }
 
+type getInstancesBody struct {
+	Page     uint `json:"page"`
+	PageSize uint `json:"pageSize"`
+}
+
 func (ic *InstanceController) GetInstances(ctx *fiber.Ctx) error {
 	idU64, err := strconv.ParseUint(ctx.Params("runnerId"), 10, 32)
 	if err != nil {
@@ -36,15 +42,21 @@ func (ic *InstanceController) GetInstances(ctx *fiber.Ctx) error {
 	}
 	id := uint(idU64)
 
+	body := &getInstancesBody{}
+	if err = ctx.BodyParser(body); err != nil && !errors.Is(err, fiber.ErrUnprocessableEntity) {
+		ic.logger.Debugf("Failed to parse getInstancesBody: %v", err)
+		return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid body"})
+	}
+
 	// Open client
-	client, err := ic.runnerService.GetClient(id)
+	client, err := ic.runnerService.GetClient(uint(id))
 	if err != nil {
 		ic.logger.Debugf("Failed to get client: %v", err)
 		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to connect runner"})
 	}
 
 	// Response
-	instances, err := client.GetInstances()
+	instances, err := client.GetInstances(int(body.Page), int(body.PageSize))
 	if err != nil {
 		ic.logger.Debugf("Failed to get instances: %v", err)
 		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to get instances"})

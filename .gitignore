@@ -3,6 +3,7 @@
 
 # Data files
 lcsm.db
+lcsm-node.db
 
 #
 # Binaries for programs and plugins

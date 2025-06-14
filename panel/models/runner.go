@@ -15,12 +15,13 @@ const (
 
 type Runner struct {
 	ID        uint           `gorm:"primarykey" json:"id"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	CreatedAt time.Time      `json:"createdAt"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deletedAt"`
 
 	Type        RunnerType `gorm:"type:string;not null" json:"type"`
-	Endpoint    string     `gorm:"not null" json:"endpoint"`
+	EndPoint    string     `json:"endPoint"`
 	Name        string     `gorm:"not null" json:"name"`
+	AuthToken   string     `json:"authToken"`
 	Description string     `json:"description"`
 }

@@ -7,20 +7,25 @@ import (
 	"github.com/klrohias/lcsm-server/common"
 	"github.com/klrohias/lcsm-server/panel/db"
 	"github.com/klrohias/lcsm-server/panel/models"
+	"github.com/klrohias/lcsm-server/panel/services"
 	"gorm.io/gorm"
 )
 
 type RunnerController struct {
-	db     *gorm.DB
-	logger common.Logger
+	db            *gorm.DB
+	logger        common.Logger
+	runnerService *services.RunnerService
 }
 
-func NewRunnerController(db *db.DbContext,
+func NewRunnerController(
+	db *db.DbContext,
 	logger common.Logger,
+	runnerService *services.RunnerService,
 ) *RunnerController {
 	return &RunnerController{
-		db:     db.DB,
-		logger: logger,
+		db:            db.DB,
+		logger:        logger,
+		runnerService: runnerService,
 	}
 }
 
@@ -78,6 +83,8 @@ func (c *RunnerController) UpdateRunner(ctx *fiber.Ctx) error {
 		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 
+	c.runnerService.CloseClient(runner.ID)
+
 	return ctx.Status(fiber.StatusOK).JSON(runner)
 }
 
@@ -98,6 +105,8 @@ func (c *RunnerController) DeleteRunner(ctx *fiber.Ctx) error {
 		c.logger.Debugf("Error deleting runner: %v", err)
 		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
+
+	c.runnerService.CloseClient(runner.ID)
 
 	return ctx.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Runner deleted successfully"})
 }

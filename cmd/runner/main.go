@@ -13,14 +13,17 @@ import (
 )
 
 type appContext struct {
-	logger common.Logger
+	logger               common.Logger
+	controlSocketService *services.ControlSocketService
 }
 
 func newAppContext(
 	logger common.Logger,
+	controlSocketService *services.ControlSocketService,
 ) *appContext {
 	return &appContext{
 		logger,
+		controlSocketService,
 	}
 }
 
@@ -28,7 +31,7 @@ func newWebServer(appContext *appContext) *fiber.App {
 	app := fiber.New()
 
 	app.Get("/lcsm-node.socket", websocket.New(func(c *websocket.Conn) {
-
+		appContext.controlSocketService.HandleWebSocket(c)
 	}))
 
 	return app
@@ -49,6 +52,7 @@ func makeContext() *dig.Container {
 
 	// Services
 	c.Provide(services.NewProcessManagementService)
+	c.Provide(services.NewControlSocketService)
 
 	// Misc
 	c.Provide(db.NewDbContext)
@@ -57,11 +61,20 @@ func makeContext() *dig.Container {
 	return c
 }
 
+func setupContext(appContext *appContext) {
+	authToken := os.Getenv("LCSM_AUTH_TOKEN")
+	if authToken == "" {
+		log.Fatal("LCSM_AUTH_TOKEN environment variable not set")
+	}
+	appContext.controlSocketService.SetAuthToken(authToken)
+}
+
 func main() {
 	c := makeContext()
 	c.Invoke(func(appContext *appContext) {
-		s := newWebServer(appContext)
+		setupContext(appContext)
 
+		s := newWebServer(appContext)
 		if err := s.Listen(getListenAddr()); err != nil {
 			log.Fatalf("Server failed to start: %v", err)
 		}

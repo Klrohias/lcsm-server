@@ -16,6 +16,7 @@ require (
 require (
 	github.com/fasthttp/websocket v1.5.12 // indirect
 	github.com/gofiber/contrib/websocket v1.3.4 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287 // indirect
 	golang.org/x/net v0.41.0 // indirect
 )
