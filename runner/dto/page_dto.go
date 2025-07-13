@@ -6,6 +6,6 @@ type PageDto struct {
 }
 
 type PagedResultDto struct {
-	Total int         `json:"total"`
-	Items interface{} `json:"items"`
+	Total int `json:"total"`
+	Items any `json:"items"`
 }

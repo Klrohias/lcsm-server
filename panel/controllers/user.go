@@ -6,7 +6,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/klrohias/lcsm-server/common"
-	"github.com/klrohias/lcsm-server/panel/db"
+	"github.com/klrohias/lcsm-server/panel"
 	"github.com/klrohias/lcsm-server/panel/models"
 	"github.com/klrohias/lcsm-server/panel/services"
 )
@@ -17,14 +17,15 @@ type UserController struct {
 	logger      common.Logger
 }
 
-func NewUserController(db *db.DbContext,
+func NewUserController(
+	db *gorm.DB,
 	authService *services.AuthService,
 	logger common.Logger,
 ) *UserController {
 	return &UserController{
-		db:          db.DB,
-		authService: authService,
-		logger:      logger,
+		db,
+		authService,
+		logger,
 	}
 }
 
@@ -50,14 +51,14 @@ func (uc *UserController) CurrentUser(c *fiber.Ctx) error {
 	// Get claims from context
 	claims := services.GetClaims(c)
 	if claims == nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
+		return c.Status(fiber.StatusUnauthorized).JSON(panel.ErrorUnauthorized)
 	}
 
 	// Find user
 	var user models.User
 	if result := uc.db.Where("username = ?", claims.Username).First(&user); result.Error != nil {
 		uc.logger.Debugf("User not found: %v", result.Error)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "User not found"})
+		return c.Status(fiber.StatusInternalServerError).JSON(panel.ErrorInternal)
 	}
 
 	// Return user info without sensitive fields
@@ -73,27 +74,27 @@ func (uc *UserController) Authenticate(c *fiber.Ctx) error {
 	var req AuthenticateRequest
 	if err := c.BodyParser(&req); err != nil {
 		uc.logger.Debugf("Invalid request: %v", err)
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request"})
+		return c.Status(fiber.StatusBadRequest).JSON(panel.ErrorInvalidBody)
 	}
 
 	// Find user
 	var user models.User
 	if result := uc.db.Where("username = ?", req.Username).First(&user); result.Error != nil {
 		uc.logger.Debugf("User not found: %v", result.Error)
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
+		return c.Status(fiber.StatusUnauthorized).JSON(panel.ErrorUnauthorized)
 	}
 
 	// Check password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
 		uc.logger.Debugf("Invalid password: %v", err)
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
+		return c.Status(fiber.StatusUnauthorized).JSON(panel.ErrorUnauthorized)
 	}
 
 	// Generate JWT token
 	token, err := uc.authService.GenerateToken(user.Username, string(user.Role))
 	if err != nil {
 		uc.logger.Debugf("Failed to generate token: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to generate token"})
+		return c.Status(fiber.StatusInternalServerError).JSON(panel.ErrorInternal)
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
@@ -105,24 +106,24 @@ func (uc *UserController) CreateUser(c *fiber.Ctx) error {
 	var req UserUpdateRequest
 	if err := c.BodyParser(&req); err != nil {
 		uc.logger.Debugf("Invalid request: %v", err)
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request"})
+		return c.Status(fiber.StatusBadRequest).JSON(panel.ErrorInvalidBody)
 	}
 
 	// Check if user exists
 	var userCount int64
 	if result := uc.db.Model(&models.User{}).Where("username = ?", req.Username).Count(&userCount); result.Error != nil {
 		uc.logger.Debugf("Failed to count users: %v", result.Error)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(panel.ErrorInternal)
 	}
 
 	if userCount != 0 {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "User existed"})
+		return c.Status(fiber.StatusConflict).JSON(panel.ErrorAlreadyExisted)
 	}
 
 	// Check if it should be a admin
 	if result := uc.db.Model(&models.User{}).Count(&userCount); result.Error != nil {
 		uc.logger.Debugf("Failed to count users: %v", result.Error)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(panel.ErrorInternal)
 	}
 
 	shouldBeAdmin := req.Role == string(models.RoleAdmin)
@@ -136,7 +137,7 @@ func (uc *UserController) CreateUser(c *fiber.Ctx) error {
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		uc.logger.Debugf("Failed to hash password: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to hash password"})
+		return c.Status(fiber.StatusInternalServerError).JSON(panel.ErrorInternal)
 	}
 
 	// Create user
@@ -153,7 +154,7 @@ func (uc *UserController) CreateUser(c *fiber.Ctx) error {
 
 	if result := uc.db.Create(&user); result.Error != nil {
 		uc.logger.Debugf("Failed to create user: %v", result.Error)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create user"})
+		return c.Status(fiber.StatusInternalServerError).JSON(panel.ErrorInternal)
 	}
 
 	return c.Status(fiber.StatusOK).JSON(UserResponse{

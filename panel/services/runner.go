@@ -2,7 +2,6 @@ package services
 
 import (
 	"github.com/klrohias/lcsm-server/common"
-	"github.com/klrohias/lcsm-server/panel/db"
 	"github.com/klrohias/lcsm-server/panel/models"
 	"gorm.io/gorm"
 
@@ -17,9 +16,9 @@ type RunnerService struct {
 	logger  common.Logger
 }
 
-func NewRunnerService(db *db.DbContext, logger common.Logger) *RunnerService {
+func NewRunnerService(db *gorm.DB, logger common.Logger) *RunnerService {
 	return &RunnerService{
-		db:      db.DB,
+		db:      db,
 		clients: make(ClientMap),
 		logger:  logger,
 	}

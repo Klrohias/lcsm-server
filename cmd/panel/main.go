@@ -6,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/dig"
+	"gorm.io/gorm"
 
 	"github.com/klrohias/lcsm-server/common"
 	"github.com/klrohias/lcsm-server/panel/controllers"
@@ -14,7 +15,7 @@ import (
 )
 
 type appContext struct {
-	dbContext *db.DbContext
+	dbContext *gorm.DB
 
 	userController     *controllers.UserController
 	runnerController   *controllers.RunnerController
@@ -26,7 +27,7 @@ type appContext struct {
 }
 
 func newAppContext(
-	dbContext *db.DbContext,
+	dbContext *gorm.DB,
 	userController *controllers.UserController,
 	runnerController *controllers.RunnerController,
 	systemController *controllers.SystemController,

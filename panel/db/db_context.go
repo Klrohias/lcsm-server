@@ -9,11 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-type DbContext struct {
-	DB *gorm.DB
-}
-
-func NewDbContext() (*DbContext, error) {
+func NewDbContext() (*gorm.DB, error) {
 	dbPath := os.Getenv("LCSM_DB_PATH")
 	if dbPath == "" {
 		dbPath = "./lcsm.db"
@@ -29,7 +25,5 @@ func NewDbContext() (*DbContext, error) {
 		return nil, fmt.Errorf("failed to migrate database: %v", err)
 	}
 
-	return &DbContext{
-		DB: db,
-	}, nil
+	return db, nil
 }

@@ -3,7 +3,7 @@ package controllers
 import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/klrohias/lcsm-server/common"
-	"github.com/klrohias/lcsm-server/panel/db"
+	"github.com/klrohias/lcsm-server/panel"
 	"github.com/klrohias/lcsm-server/panel/models"
 	"gorm.io/gorm"
 )
@@ -17,12 +17,13 @@ type SystemHealthResponse struct {
 	TotalUsers int `json:"totalUser"`
 }
 
-func NewSystemController(db *db.DbContext,
+func NewSystemController(
+	db *gorm.DB,
 	logger common.Logger,
 ) *SystemController {
 	return &SystemController{
-		db:     db.DB,
-		logger: logger,
+		db,
+		logger,
 	}
 }
 
@@ -31,10 +32,10 @@ func (sc *SystemController) SystemHealth(c *fiber.Ctx) error {
 	var totalUsers int64
 	if result := sc.db.Model(&models.User{}).Count(&totalUsers); result.Error != nil {
 		sc.logger.Debugf("Failed to count users: %v", result.Error)
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to count users"})
+		return c.Status(fiber.StatusInternalServerError).JSON(panel.ErrorInternal)
 	}
 
-	return c.Status(200).JSON(SystemHealthResponse{
+	return c.Status(fiber.StatusOK).JSON(SystemHealthResponse{
 		TotalUsers: int(totalUsers),
 	})
 }

@@ -5,19 +5,21 @@ import (
 
 	"github.com/gofiber/contrib/websocket"
 	"github.com/klrohias/lcsm-server/common"
-	"github.com/klrohias/lcsm-server/runner/db"
 	"github.com/klrohias/lcsm-server/runner/dto"
 	"github.com/klrohias/lcsm-server/runner/models"
+	"gorm.io/gorm"
 )
 
 type ControlSocketService struct {
 	authToken string
-	db        *db.DbContext
+	db        *gorm.DB
 	logger    common.Logger
 }
 
-func NewControlSocketService(db *db.DbContext,
-	logger common.Logger) *ControlSocketService {
+func NewControlSocketService(
+	db *gorm.DB,
+	logger common.Logger,
+) *ControlSocketService {
 	return &ControlSocketService{
 		db:     db,
 		logger: logger,
@@ -38,7 +40,7 @@ func (c *ControlSocketService) HandleListInstances(conn *websocket.Conn, action 
 	// Get page parameters from action data
 	var err error
 	pageDto := &dto.PageDto{}
-	if json.Unmarshal(action.Data, pageDto); err != nil {
+	if err = json.Unmarshal(action.Data, pageDto); err != nil {
 		c.logger.Errorf("%s", err)
 		response.Error = "Invalid page parameters"
 		return
@@ -57,7 +59,7 @@ func (c *ControlSocketService) HandleListInstances(conn *websocket.Conn, action 
 
 	// Get total count
 	var total int64
-	if err := c.db.DB.Model(&models.Instance{}).Count(&total).Error; err != nil {
+	if err := c.db.Model(&models.Instance{}).Count(&total).Error; err != nil {
 		c.logger.Errorf("%s", err)
 		response.Error = "Failed to count instances"
 		return
@@ -65,7 +67,7 @@ func (c *ControlSocketService) HandleListInstances(conn *websocket.Conn, action 
 
 	// Get paginated instances
 	var instances []models.Instance
-	result := c.db.DB.Offset(offset).Limit(pageDto.PageSize).Find(&instances)
+	result := c.db.Offset(offset).Limit(pageDto.PageSize).Find(&instances)
 	if result.Error != nil {
 		c.logger.Errorf("%s", result.Error)
 		response.Error = "Failed to fetch instances"
