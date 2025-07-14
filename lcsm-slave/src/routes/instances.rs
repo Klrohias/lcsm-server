@@ -74,12 +74,11 @@ async fn get_instance(
     Path(id): Path<u64>,
 ) -> Result<Json<instance::Model>, StatusCode> {
     let db = &state.db;
-    let it =
-        instance::Entity::find_by_id(TryInto::<i32>::try_into(id).map_err(bad_request_with_log())?)
-            .one(db)
-            .await
-            .map_err(internal_error_with_log())?
-            .ok_or(StatusCode::NOT_FOUND)?;
+    let it = instance::Entity::find_by_id(i32::try_from(id).map_err(bad_request_with_log())?)
+        .one(db)
+        .await
+        .map_err(internal_error_with_log())?
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(it))
 }
