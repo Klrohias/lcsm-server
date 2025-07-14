@@ -2,8 +2,11 @@ use axum::Router;
 
 use crate::AppStateRef;
 
-mod instance;
+mod instances;
+mod processes;
 
-pub fn get_routes(state: &AppStateRef) -> Router {
-    Router::new().nest("/instances", instance::get_routes(state))
+pub fn get_routes(state_ref: &AppStateRef) -> Router {
+    Router::new()
+        .nest("/instances", instances::get_routes(state_ref))
+        .nest("/processes", processes::get_routes(state_ref))
 }

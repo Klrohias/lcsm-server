@@ -2,7 +2,7 @@ use crate::{
     AppStateRef,
     entities::instance,
     errors::{bad_request_with_log, internal_error_with_log},
-    transfer::{PaginationOptions, PaginationResult},
+    transfer::{PaginationOptions, PaginationResponse},
 };
 
 use axum::{
@@ -11,11 +11,16 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
+use axum_extra::extract::Query as ExtraQuery;
 use json_patch::{PatchOperation, patch as apply_json_patch};
-use sea_orm::{ActiveModelTrait, ActiveValue::NotSet, EntityTrait, PaginatorTrait};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, EntityTrait, IntoActiveModel,
+    PaginatorTrait, QueryFilter,
+};
+use serde::Deserialize;
 use serde_json::Value;
 
-pub fn get_routes(state: &AppStateRef) -> Router {
+pub fn get_routes(state_ref: &AppStateRef) -> Router {
     Router::new()
         .route("/", get(get_instances).put(create_instance))
         .route(
@@ -24,18 +29,29 @@ pub fn get_routes(state: &AppStateRef) -> Router {
                 .patch(update_instance)
                 .delete(delete_instance),
         )
-        .with_state(state.clone())
+        .with_state(state_ref.clone())
+}
+
+#[derive(Deserialize)]
+struct InstancesQuery {
+    pub ids: Option<Vec<u64>>,
 }
 
 async fn get_instances(
     State(state): State<AppStateRef>,
     Query(pagination): Query<PaginationOptions>,
-) -> Result<Json<PaginationResult<instance::Model>>, StatusCode> {
+    ExtraQuery(query): ExtraQuery<InstancesQuery>,
+) -> Result<Json<PaginationResponse<instance::Model>>, StatusCode> {
     let db = &state.db;
     let page = pagination.page.unwrap_or(1);
     let page_size = pagination.page_size.unwrap_or(10);
 
-    let paginator = instance::Entity::find().paginate(db, page_size);
+    let mut paginator = instance::Entity::find();
+    if query.ids.is_some() {
+        paginator = paginator.filter(instance::Column::Id.is_in(query.ids.unwrap()));
+    }
+
+    let paginator = paginator.paginate(db, page_size);
     let num = paginator
         .num_items_and_pages()
         .await
@@ -46,7 +62,7 @@ async fn get_instances(
         .await
         .map_err(internal_error_with_log())?;
 
-    Ok(Json(PaginationResult {
+    Ok(Json(PaginationResponse {
         page_count: num.number_of_pages,
         total: num.number_of_items,
         data: models,
@@ -55,14 +71,15 @@ async fn get_instances(
 
 async fn get_instance(
     State(state): State<AppStateRef>,
-    Path(id): Path<i32>,
+    Path(id): Path<u64>,
 ) -> Result<Json<instance::Model>, StatusCode> {
     let db = &state.db;
-    let it = instance::Entity::find_by_id(id)
-        .one(db)
-        .await
-        .map_err(internal_error_with_log())?
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let it =
+        instance::Entity::find_by_id(TryInto::<i32>::try_into(id).map_err(bad_request_with_log())?)
+            .one(db)
+            .await
+            .map_err(internal_error_with_log())?
+            .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(it))
 }
@@ -109,7 +126,7 @@ async fn update_instance(
         return Err(StatusCode::NOT_ACCEPTABLE);
     }
 
-    let updated: instance::ActiveModel = updated.into();
+    let updated = updated.into_active_model().reset_all();
     let res = updated
         .update(db)
         .await

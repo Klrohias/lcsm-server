@@ -7,7 +7,7 @@ pub struct PaginationOptions {
 }
 
 #[derive(Serialize)]
-pub struct PaginationResult<T> {
+pub struct PaginationResponse<T> {
     pub total: u64,
     pub page_count: u64,
     pub data: Vec<T>,
