@@ -1,0 +1,6 @@
+[workspace]
+resolver = "3"
+members = ["lcsm-master", "lcsm-slave"]
+
+[profile.dev.package."*"]
+debug = false
