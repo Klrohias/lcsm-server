@@ -10,6 +10,8 @@ pub struct Model {
     pub name: String,
     pub launch_command: String,
     pub work_dir: String,
+    pub arguments: String,
+    pub use_shell: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

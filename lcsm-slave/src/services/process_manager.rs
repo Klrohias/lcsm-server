@@ -1,4 +1,10 @@
-use std::{collections::HashMap, ffi::OsStr, path::Path, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    ffi::{OsStr, OsString},
+    path::Path,
+    process::Stdio,
+    sync::Arc,
+};
 
 use anyhow::Result;
 use log::warn;
@@ -12,11 +18,12 @@ use crate::transfer::{BinarySequence, redirect_input, redirect_output};
 
 fn create_output_redirect(
     output: impl AsyncRead + Unpin + Sync + Send + 'static,
+    child: Arc<RwLock<Child>>,
 ) -> broadcast::Receiver<BinarySequence> {
     let (tx, rx) = broadcast::channel(8);
 
     tokio::spawn(async move {
-        if let Err(e) = redirect_output(output, tx).await {
+        if let Err(e) = redirect_output(output, tx, child).await {
             warn!("{}", e);
         }
     });
@@ -52,13 +59,48 @@ pub enum ProcessState {
     Dead,
 }
 
-impl Process {
-    pub fn new(mut child: Child) -> Self {
-        let stdout = child.stdout.take().map(create_output_redirect);
-        let stderr = child.stderr.take().map(create_output_redirect);
-        let stdin = child.stdin.take().map(create_input_redirect);
+impl ProcessState {
+    pub async fn from_child(child: &Arc<RwLock<Child>>) -> Self {
+        let mut child = child.write().await;
 
+        match child.try_wait() {
+            Err(e) => {
+                warn!("Error while checking status of child process: {}", e);
+                Self::Dead
+            }
+            Ok(s) => {
+                if s.is_none() {
+                    Self::Alive
+                } else {
+                    Self::Dead
+                }
+            }
+        }
+    }
+}
+
+impl Process {
+    pub async fn setup(child: Child) -> Self {
+        // create ref
         let child = Arc::new(RwLock::new(child));
+
+        // stdio redirect
+        let (stdout, stderr, stdin) = {
+            let child_ref = &child;
+            let mut child = child.write().await;
+
+            let stdout = child
+                .stdout
+                .take()
+                .map(|x| create_output_redirect(x, child_ref.clone()));
+            let stderr = child
+                .stderr
+                .take()
+                .map(|x| create_output_redirect(x, child_ref.clone()));
+            let stdin = child.stdin.take().map(|x| create_input_redirect(x));
+
+            (stdout, stderr, stdin)
+        };
 
         Self {
             child,
@@ -69,7 +111,12 @@ impl Process {
     }
 
     pub async fn kill(&self) -> Result<()> {
-        self.child.write().await.kill().await?;
+        let mut process = self.child.write().await;
+        let exit_code = process.try_wait()?;
+        if exit_code.is_none() {
+            process.kill().await?;
+        }
+
         Ok(())
     }
 
@@ -86,21 +133,7 @@ impl Process {
     }
 
     pub async fn state(&self) -> ProcessState {
-        let mut child = self.child.write().await;
-
-        match child.try_wait() {
-            Err(e) => {
-                warn!("Error while checking status of child process: {}", e);
-                ProcessState::Dead
-            }
-            Ok(s) => {
-                if s.is_none() {
-                    ProcessState::Alive
-                } else {
-                    ProcessState::Dead
-                }
-            }
-        }
+        ProcessState::from_child(&self.child).await
     }
 }
 
@@ -123,19 +156,68 @@ impl ProcessManagementService {
         }
     }
 
-    pub async fn new_process(
-        &self,
-        id: u64,
+    fn generate_command_with_shell(
         launch_command: impl AsRef<OsStr>,
         arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
-        work_dir: impl AsRef<Path>,
-    ) -> Result<()> {
+    ) -> Command {
+        if cfg!(target_os = "macos") {
+            // macOS
+            let mut child = Command::new("script");
+
+            // build launch arguments
+            let mut arguments_vec: Vec<OsString> = vec![
+                "-q".into(),
+                "/dev/null".into(),
+                "/bin/bash".into(),
+                "-c".into(),
+            ];
+
+            arguments_vec.push(launch_command.as_ref().to_owned());
+            for arg in arguments {
+                arguments_vec.push(arg.as_ref().to_owned());
+            }
+
+            child
+                .args(arguments_vec)
+                .stderr(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stdin(Stdio::piped());
+
+            child
+        } else {
+            // unsupported
+            warn!("Trying to spawn with shell on unsupported platform, fallback");
+            Self::generate_command(launch_command, arguments)
+        }
+    }
+
+    fn generate_command(
+        launch_command: impl AsRef<OsStr>,
+        arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
+    ) -> Command {
         let mut child = Command::new(launch_command);
         child
             .args(arguments)
             .stderr(Stdio::piped())
             .stdout(Stdio::piped())
             .stdin(Stdio::piped());
+
+        child
+    }
+
+    pub async fn new_process(
+        &self,
+        id: u64,
+        launch_command: impl AsRef<OsStr>,
+        arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        work_dir: impl AsRef<Path>,
+        use_shell: bool,
+    ) -> Result<()> {
+        let mut child = if use_shell {
+            Self::generate_command_with_shell(launch_command, arguments)
+        } else {
+            Self::generate_command(launch_command, arguments)
+        };
 
         let work_dir = work_dir.as_ref();
         if !work_dir.as_os_str().is_empty() {
@@ -146,7 +228,7 @@ impl ProcessManagementService {
 
         {
             let mut processes_write = self.processes.write().await;
-            processes_write.insert(id, Process::new(child).into());
+            processes_write.insert(id, Process::setup(child).await.into());
         }
 
         Ok(())
