@@ -120,15 +120,15 @@ impl Process {
         Ok(())
     }
 
-    pub fn get_stdout(&self) -> Option<broadcast::Receiver<Vec<u8>>> {
+    pub fn get_stdout(&self) -> Option<broadcast::Receiver<BinarySequence>> {
         self.stdout.as_ref().map(|x| x.resubscribe())
     }
 
-    pub fn get_stderr(&self) -> Option<broadcast::Receiver<Vec<u8>>> {
+    pub fn get_stderr(&self) -> Option<broadcast::Receiver<BinarySequence>> {
         self.stderr.as_ref().map(|x| x.resubscribe())
     }
 
-    pub fn get_stdin(&self) -> Option<mpsc::Sender<Vec<u8>>> {
+    pub fn get_stdin(&self) -> Option<mpsc::Sender<BinarySequence>> {
         self.stdin.as_ref().map(|x| x.clone())
     }
 
@@ -212,7 +212,7 @@ impl ProcessManagementService {
         arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
         work_dir: impl AsRef<Path>,
         use_shell: bool,
-    ) -> Result<()> {
+    ) -> Result<ProcessRef> {
         let mut child = if use_shell {
             Self::generate_command_with_shell(launch_command, arguments)
         } else {
@@ -226,12 +226,16 @@ impl ProcessManagementService {
 
         let child = child.spawn()?;
 
-        {
-            let mut processes_write = self.processes.write().await;
-            processes_write.insert(id, Process::setup(child).await.into());
-        }
+        // NOTICE: code about log_service is not here, you should go to `routes/...` to find it
 
-        Ok(())
+        let process_ref = {
+            let process_ref = ProcessRef::from(Process::setup(child).await);
+            let mut processes_write = self.processes.write().await;
+            processes_write.insert(id, process_ref.clone());
+            process_ref
+        };
+
+        Ok(process_ref)
     }
 
     pub async fn get_process(&self, id: u64) -> Option<ProcessRef> {

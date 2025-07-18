@@ -27,4 +27,4 @@ tokio = { version = "1.46.1", features = [
     "sync",
 ] }
 tower = "0.5.2"
-tower-http = { version = "0.6.6", features = ["cors", "auth"] }
+tower-http = { version = "0.6.6", features = ["cors", "auth", "fs"] }
