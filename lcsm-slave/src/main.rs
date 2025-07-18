@@ -1,6 +1,6 @@
-use std::{env, sync::Arc, time::Duration};
+use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use axum::Router;
 use lcsm_slave::{AppState, AppStateRef, routes};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
@@ -38,9 +38,21 @@ fn build_routes(app: Router, state: &AppStateRef) -> Result<Router> {
     Ok(app.merge(routes::get_routes(state)))
 }
 
+fn get_data_path() -> Result<PathBuf, Error> {
+    Ok(match env::var("LCSM_DATA_PATH") {
+        Ok(path) => PathBuf::from(&path),
+        Err(_) => env::current_dir()?,
+    })
+}
+
 async fn build_app() -> Result<Router> {
     // build state
-    let app_state = Arc::new(AppState::new(build_database_connection().await?));
+    let app_state = Arc::new(AppState::new(
+        build_database_connection().await?,
+        get_data_path()?,
+    ));
+
+    app_state.ensure_path_created()?;
 
     // build app
     let app = Router::new();

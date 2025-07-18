@@ -3,12 +3,12 @@ use std::ffi::OsString;
 use axum::{
     Router,
     extract::{
-        Path, State, WebSocketUpgrade,
+        Path, Request, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::StatusCode,
-    response::Response,
-    routing::{any, put},
+    response::IntoResponse,
+    routing::{any, get, put},
 };
 use log::{error, info, warn};
 use sea_orm::EntityTrait;
@@ -16,12 +16,15 @@ use tokio::{
     sync::{broadcast::error::RecvError, mpsc, oneshot},
     task::JoinError,
 };
+use tower::ServiceExt;
+use tower_http::services::ServeFile;
 
 use crate::{
     AppStateRef,
     entities::instance,
     errors::{bad_request_with_log, internal_error_with_log},
     services::{ProcessRef, ProcessState},
+    something_with_log,
 };
 
 use futures::{SinkExt, StreamExt};
@@ -33,11 +36,12 @@ pub fn get_routes(state_ref: &AppStateRef) -> Router {
             put(start_process).delete(kill_process).get(process_state),
         )
         .route("/{id}/terminal", any(terminal_ws_connect))
+        .route("/{id}/logs", get(fetch_process_log))
         .with_state(state_ref.clone())
 }
 
 async fn get_alive_process(state: &AppStateRef, id: u64) -> Option<ProcessRef> {
-    let process = state.pm.get_process(id).await;
+    let process = state.process_manager.get_process(id).await;
     if process.is_none() {
         return None;
     }
@@ -66,7 +70,7 @@ async fn start_process(
     }
 
     // start process
-    let db = &state.db;
+    let db = &state.database;
     let the_instance =
         instance::Entity::find_by_id(i32::try_from(id).map_err(bad_request_with_log!())?)
             .one(db)
@@ -80,8 +84,8 @@ async fn start_process(
         .map(|x| x.into())
         .collect::<Vec<OsString>>();
 
-    state
-        .pm
+    let process_ref = state
+        .process_manager
         .new_process(
             id,
             the_instance.launch_command,
@@ -91,6 +95,8 @@ async fn start_process(
         )
         .await
         .map_err(internal_error_with_log!())?;
+
+    _ = state.log_manager.begin_log(id, process_ref).await;
 
     Ok(())
 }
@@ -128,12 +134,23 @@ async fn terminal_ws_connect(
     State(state): State<AppStateRef>,
     Path(id): Path<u64>,
     ws: WebSocketUpgrade,
-) -> Result<Response, StatusCode> {
+) -> Result<impl IntoResponse, StatusCode> {
     let process = get_alive_process(&state, id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    Ok(ws.on_upgrade(move |ws| terminal_ws_handler(ws, id, process)))
+    let log_begin = state
+        .log_manager
+        .get_log_begin(id)
+        .await
+        .map_err(something_with_log!(0 as u64));
+
+    let log_begin = log_begin.unwrap_or_else(|_| log_begin.unwrap_err());
+
+    Ok((
+        [("X-Log-Begin", log_begin)],
+        ws.on_upgrade(move |ws| terminal_ws_handler(ws, id, process)),
+    ))
 }
 
 async fn terminal_ws_handler(socket: WebSocket, id: u64, process: ProcessRef) {
@@ -170,35 +187,24 @@ async fn terminal_ws_handler(socket: WebSocket, id: u64, process: ProcessRef) {
         use anyhow::Ok;
 
         loop {
-            tokio::select! {
-                data = stdout.as_mut().unwrap().recv(), if stdout.is_some() => {
-                    if let Err(e) = data {
-                        if let RecvError::Lagged(l) = e {
-                            warn!("Receiver for process {} lagged {}", id, l);
-                            continue;
-                        } else {
-                            break Err(e.into());
-                        }
-                    }
-
-                    output_sender.send(data.unwrap()).await?;
-                }
-                data = stderr.as_mut().unwrap().recv(), if stderr.is_some() => {
-                    if let Err(e) = data {
-                        if let RecvError::Lagged(l) = e {
-                            warn!("Receiver for process {} lagged {}", id, l);
-                            continue;
-                        } else {
-                            break Err(e.into());
-                        }
-                    }
-
-                    output_sender.send(data.unwrap()).await?;
-                }
+            let data = tokio::select! {
+                data = stdout.as_mut().unwrap().recv(), if stdout.is_some() => data,
+                data = stderr.as_mut().unwrap().recv(), if stderr.is_some() => data,
                 else => {
                     break Ok(());
                 }
             };
+
+            if let Err(e) = data {
+                if let RecvError::Lagged(l) = e {
+                    warn!("Receiver for process {} lagged {}", id, l);
+                    continue;
+                } else {
+                    break Err(e.into());
+                }
+            }
+
+            output_sender.send(data.unwrap()).await?;
         }
     });
 
@@ -246,4 +252,17 @@ fn just_get_error(r: Result<Result<(), anyhow::Error>, JoinError>) -> Option<any
         },
         Err(e) => Some(e.into()),
     }
+}
+
+async fn fetch_process_log(
+    Path(id): Path<u64>,
+    State(state): State<AppStateRef>,
+    request: Request,
+) -> Result<impl IntoResponse, StatusCode> {
+    let log_path = state.log_manager.get_log_path(id);
+    if !log_path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    Ok(ServeFile::new(log_path).oneshot(request).await)
 }

@@ -43,7 +43,7 @@ async fn get_instances(
     Query(pagination): Query<PaginationOptions>,
     ExtraQuery(query): ExtraQuery<InstancesQuery>,
 ) -> Result<Json<PaginationResponse<instance::Model>>, StatusCode> {
-    let db = &state.db;
+    let db = &state.database;
     let page = pagination.page.unwrap_or(1);
     let page_size = pagination.page_size.unwrap_or(10);
 
@@ -74,7 +74,7 @@ async fn get_instance(
     State(state): State<AppStateRef>,
     Path(id): Path<u64>,
 ) -> Result<Json<instance::Model>, StatusCode> {
-    let db = &state.db;
+    let db = &state.database;
     let it = instance::Entity::find_by_id(i32::try_from(id).map_err(bad_request_with_log!())?)
         .one(db)
         .await
@@ -88,7 +88,7 @@ async fn create_instance(
     State(state): State<AppStateRef>,
     Json(payload): Json<instance::Model>,
 ) -> Result<Json<instance::Model>, StatusCode> {
-    let db = &state.db;
+    let db = &state.database;
     let active = instance::ActiveModel {
         id: NotSet, // empty the id
         ..payload.into()
@@ -106,7 +106,7 @@ async fn update_instance(
     Path(id): Path<i32>,
     Json(patch_ops): Json<Value>, // 传入 JSON Patch 格式
 ) -> Result<Json<instance::Model>, StatusCode> {
-    let db = &state.db;
+    let db = &state.database;
     let model = instance::Entity::find_by_id(id)
         .one(db)
         .await
@@ -142,7 +142,7 @@ async fn delete_instance(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
 ) -> Result<StatusCode, StatusCode> {
-    let db = &state.db;
+    let db = &state.database;
     let res = instance::Entity::delete_by_id(id)
         .exec(db)
         .await

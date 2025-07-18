@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{
-    Extension,
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
