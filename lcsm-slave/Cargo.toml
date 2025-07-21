@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.98"
 axum = { version = "0.8.4", features = ["macros", "ws"] }
 axum-extra = { version = "0.10.1", features = ["query"] }
+bollard = { version = "0.19.1", optional = true }
 bytes = "1.10.1"
 env_logger = "0.11.8"
 futures = "0.3.31"
@@ -28,3 +29,7 @@ tokio = { version = "1.46.1", features = [
 ] }
 tower = "0.5.2"
 tower-http = { version = "0.6.6", features = ["cors", "auth", "fs"] }
+# typed-container = { path = "../typed-container" }
+
+[features]
+docker = ["bollard"]

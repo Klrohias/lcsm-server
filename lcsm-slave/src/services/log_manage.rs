@@ -1,6 +1,5 @@
-use std::path::PathBuf;
-
 use log::{error, info, warn};
+use std::path::PathBuf;
 use tokio::{
     fs::{self, File},
     io::{self, AsyncWriteExt},
@@ -9,11 +8,11 @@ use tokio::{
 
 use crate::services::ProcessRef;
 
-pub struct LogService {
+pub struct ProcessLogService {
     log_path: PathBuf,
 }
 
-impl LogService {
+impl ProcessLogService {
     pub fn new(log_path: PathBuf) -> Self {
         Self { log_path }
     }

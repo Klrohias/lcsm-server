@@ -11,10 +11,18 @@ pub struct Model {
     pub launch_command: String,
     pub work_dir: String,
     pub arguments: String,
-    pub use_shell: bool,
+    pub startup_method: StartupMethod,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, EnumIter, DeriveActiveEnum)]
+#[sea_orm(rs_type = "i32", db_type = "Integer")]
+pub enum StartupMethod {
+    Default = 0,
+    Shell = 1,
+    Docker = 2,
+}

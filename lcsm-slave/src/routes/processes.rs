@@ -36,7 +36,7 @@ pub fn get_routes(state_ref: &AppStateRef) -> Router {
             put(start_process).delete(kill_process).get(process_state),
         )
         .route("/{id}/terminal", any(terminal_ws_connect))
-        .route("/{id}/logs", get(fetch_process_log))
+        .route("/{id}/log", get(fetch_process_log))
         .with_state(state_ref.clone())
 }
 
@@ -91,7 +91,7 @@ async fn start_process(
             the_instance.launch_command,
             arguments,
             the_instance.work_dir,
-            the_instance.use_shell,
+            the_instance.startup_method,
         )
         .await
         .map_err(internal_error_with_log!())?;

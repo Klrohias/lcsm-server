@@ -14,7 +14,10 @@ use tokio::{
     sync::{RwLock, broadcast, mpsc},
 };
 
-use crate::transfer::{BinarySequence, redirect_input, redirect_output};
+use crate::{
+    entities::instance,
+    transfer::{BinarySequence, redirect_input, redirect_output},
+};
 
 fn create_output_redirect(
     output: impl AsyncRead + Unpin + Sync + Send + 'static,
@@ -205,15 +208,13 @@ impl ProcessManagementService {
         child
     }
 
-    pub async fn new_process(
-        &self,
-        id: u64,
+    async fn spawn_child_process(
         launch_command: impl AsRef<OsStr>,
         arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
         work_dir: impl AsRef<Path>,
-        use_shell: bool,
-    ) -> Result<ProcessRef> {
-        let mut child = if use_shell {
+        startup_method: instance::StartupMethod,
+    ) -> Result<Child> {
+        let mut child = if startup_method == instance::StartupMethod::Shell {
             Self::generate_command_with_shell(launch_command, arguments)
         } else {
             Self::generate_command(launch_command, arguments)
@@ -224,16 +225,45 @@ impl ProcessManagementService {
             child.current_dir(work_dir);
         }
 
-        let child = child.spawn()?;
+        Ok(child.spawn()?)
+    }
 
-        // NOTICE: code about log_service is not here, you should go to `routes/...` to find it
+    async fn spawn_process(
+        launch_command: impl AsRef<OsStr>,
+        arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        work_dir: impl AsRef<Path>,
+        startup_method: instance::StartupMethod,
+    ) -> Result<Child> {
+        match startup_method {
+            instance::StartupMethod::Default | instance::StartupMethod::Shell => {
+                Self::spawn_child_process(launch_command, arguments, work_dir, startup_method).await
+            }
+            instance::StartupMethod::Docker => {
+                todo!()
+            }
+        }
+    }
 
+    pub async fn new_process(
+        &self,
+        id: u64,
+        launch_command: impl AsRef<OsStr>,
+        arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        work_dir: impl AsRef<Path>,
+        startup_method: instance::StartupMethod,
+    ) -> Result<ProcessRef> {
+        let child =
+            Self::spawn_process(launch_command, arguments, work_dir, startup_method).await?;
+
+        // store into map and return
         let process_ref = {
             let process_ref = ProcessRef::from(Process::setup(child).await);
             let mut processes_write = self.processes.write().await;
             processes_write.insert(id, process_ref.clone());
             process_ref
         };
+
+        // NOTICE if you are finding where called the ProcessLogService, go to `routes/processes.rs`
 
         Ok(process_ref)
     }
