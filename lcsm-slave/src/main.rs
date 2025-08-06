@@ -7,6 +7,7 @@ use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, validate_request::ValidateRequestHeaderLayer};
+use tracing_subscriber::{filter::EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 async fn build_database_connection() -> Result<DatabaseConnection> {
     let database_connection_string = env::var("LCSM_DATABASE")?;
@@ -24,18 +25,18 @@ async fn build_database_connection() -> Result<DatabaseConnection> {
     Ok(Database::connect(options).await?)
 }
 
-fn build_service(app: Router) -> Result<Router> {
-    let token = env::var("LCSM_SLAVE_TOKEN")?;
+fn build_services(app: Router) -> Router {
+    let token = env::var("LCSM_SLAVE_TOKEN").expect("LCSM_SLAVE_TOKEN is missing");
 
-    Ok(app.layer(
+    app.layer(
         ServiceBuilder::new()
             .layer(CorsLayer::new())
             .layer(ValidateRequestHeaderLayer::bearer(&token)),
-    ))
+    )
 }
 
-fn build_routes(app: Router, state: &AppStateRef) -> Result<Router> {
-    Ok(app.merge(routes::get_routes(state)))
+fn build_routes(app: Router, state: &AppStateRef) -> Router {
+    app.merge(routes::get_routes(state))
 }
 
 fn get_data_path() -> Result<PathBuf, Error> {
@@ -45,37 +46,41 @@ fn get_data_path() -> Result<PathBuf, Error> {
     })
 }
 
-async fn build_app() -> Result<Router> {
+async fn build_app() -> Router {
     // build state
     let app_state = Arc::new(AppState::new(
-        build_database_connection().await?,
-        get_data_path()?,
+        build_database_connection()
+            .await
+            .expect("build db connection"),
+        get_data_path().expect("get data path"),
     ));
 
-    app_state.ensure_path_created()?;
+    app_state
+        .ensure_path_created()
+        .expect("ensure path created");
 
     // build app
     let app = Router::new();
-    let app = build_routes(app, &app_state)?;
-    let app = build_service(app)?;
+    let app = build_routes(app, &app_state);
+    let app = build_services(app);
 
-    Ok(app)
+    app
 }
 
-async fn app_main() -> Result<()> {
-    env_logger::init();
-
-    let listen_addr = env::var("LCSM_LISTEN_ADDR")?;
-    let listener = TcpListener::bind(listen_addr).await?;
-    let app = build_app().await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
+fn init_tracing() {
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env())
+        .with(fmt::layer())
+        .init();
 }
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = app_main().await {
-        panic!("{}", e);
-    }
+    init_tracing();
+    let listen_addr = env::var("LCSM_LISTEN_ADDR").expect("LCSM_LISTEN_ADDR is missing");
+    let listener = TcpListener::bind(listen_addr)
+        .await
+        .expect("tcp server bind");
+    let app = build_app().await;
+    axum::serve(listener, app).await.expect("serve app");
 }

@@ -1,7 +1,7 @@
 use crate::{
     AppStateRef,
     entities::instance,
-    errors::{bad_request_with_log, internal_error_with_log},
+    errors::trace_error,
     transfer::{PaginationOptions, PaginationResponse},
 };
 
@@ -19,6 +19,7 @@ use sea_orm::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::instrument;
 
 pub fn get_routes(state_ref: &AppStateRef) -> Router {
     Router::new()
@@ -32,12 +33,13 @@ pub fn get_routes(state_ref: &AppStateRef) -> Router {
         .with_state(state_ref.clone())
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct InstancesQuery {
     #[serde(rename = "id")]
     pub ids: Option<Vec<u64>>,
 }
 
+#[instrument(skip(state))]
 async fn get_instances(
     State(state): State<AppStateRef>,
     Query(pagination): Query<PaginationOptions>,
@@ -53,15 +55,15 @@ async fn get_instances(
     }
 
     let paginator = paginator.paginate(db, page_size);
-    let num = paginator
-        .num_items_and_pages()
-        .await
-        .map_err(internal_error_with_log!())?;
+    let num = paginator.num_items_and_pages().await.map_err(trace_error!(
+        "num_items_and_pages",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
 
-    let models = paginator
-        .fetch_page(page - 1)
-        .await
-        .map_err(internal_error_with_log!())?;
+    let models = paginator.fetch_page(page - 1).await.map_err(trace_error!(
+        "fetch_page",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
 
     Ok(Json(PaginationResponse {
         page_count: num.number_of_pages,
@@ -70,20 +72,24 @@ async fn get_instances(
     }))
 }
 
+#[instrument(skip(state))]
 async fn get_instance(
     State(state): State<AppStateRef>,
     Path(id): Path<u64>,
 ) -> Result<Json<instance::Model>, StatusCode> {
     let db = &state.database;
-    let it = instance::Entity::find_by_id(i32::try_from(id).map_err(bad_request_with_log!())?)
-        .one(db)
-        .await
-        .map_err(internal_error_with_log!())?
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let it = instance::Entity::find_by_id(
+        i32::try_from(id).map_err(trace_error!("parse id", StatusCode::BAD_REQUEST))?,
+    )
+    .one(db)
+    .await
+    .map_err(trace_error!("one from db", StatusCode::BAD_REQUEST))?
+    .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(it))
 }
 
+#[instrument(skip(state))]
 async fn create_instance(
     State(state): State<AppStateRef>,
     Json(payload): Json<instance::Model>,
@@ -97,10 +103,11 @@ async fn create_instance(
     let res = active
         .insert(db)
         .await
-        .map_err(internal_error_with_log!())?;
+        .map_err(trace_error!("insert", StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Json(res))
 }
 
+#[instrument(skip(state))]
 async fn update_instance(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
@@ -110,20 +117,27 @@ async fn update_instance(
     let model = instance::Entity::find_by_id(id)
         .one(db)
         .await
-        .map_err(internal_error_with_log!())?
+        .map_err(trace_error!(
+            "one from db",
+            StatusCode::INTERNAL_SERVER_ERROR
+        ))?
         .ok_or(StatusCode::NOT_FOUND)?;
 
     // preapre
-    let mut value = serde_json::to_value(&model).map_err(internal_error_with_log!())?;
-    let patch_ops_vec: Vec<PatchOperation> =
-        serde_json::from_value(patch_ops).map_err(bad_request_with_log!())?;
+    let mut value = serde_json::to_value(&model).map_err(trace_error!(
+        "to serde value",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
+    let patch_ops_vec: Vec<PatchOperation> = serde_json::from_value(patch_ops)
+        .map_err(trace_error!("parse json patch", StatusCode::BAD_REQUEST))?;
 
     // apply
-    apply_json_patch(&mut value, &patch_ops_vec).map_err(bad_request_with_log!())?;
+    apply_json_patch(&mut value, &patch_ops_vec)
+        .map_err(trace_error!("apply_json_patch", StatusCode::BAD_REQUEST))?;
 
     // check
-    let updated: instance::Model =
-        serde_json::from_value(value).map_err(bad_request_with_log!())?;
+    let updated: instance::Model = serde_json::from_value(value)
+        .map_err(trace_error!("get new model", StatusCode::BAD_REQUEST))?;
 
     if updated.id != model.id {
         // avoid changing the id
@@ -131,13 +145,14 @@ async fn update_instance(
     }
 
     let updated = updated.into_active_model().reset_all();
-    let res = updated
-        .update(db)
-        .await
-        .map_err(internal_error_with_log!())?;
+    let res = updated.update(db).await.map_err(trace_error!(
+        "update to db",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
     Ok(Json(res))
 }
 
+#[instrument(skip(state))]
 async fn delete_instance(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
@@ -146,7 +161,10 @@ async fn delete_instance(
     let res = instance::Entity::delete_by_id(id)
         .exec(db)
         .await
-        .map_err(internal_error_with_log!())?;
+        .map_err(trace_error!(
+            "exec delete",
+            StatusCode::INTERNAL_SERVER_ERROR
+        ))?;
     if res.rows_affected == 0 {
         return Err(StatusCode::NOT_FOUND);
     }

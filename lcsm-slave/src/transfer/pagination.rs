@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct PaginationOptions {
     pub page: Option<u64>,
     pub page_size: Option<u64>,

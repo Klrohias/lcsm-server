@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::Result;
-use log::warn;
+
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     process::{Child, Command},
@@ -24,7 +24,7 @@ fn create_output_redirect(
 
     tokio::spawn(async move {
         if let Err(e) = redirect_output(output, tx, child).await {
-            warn!("{}", e);
+            tracing::warn!("create output redirect: {}", e);
         }
     });
 
@@ -38,7 +38,7 @@ fn create_input_redirect(
 
     tokio::spawn(async move {
         if let Err(e) = redirect_input(input, rx).await {
-            warn!("{}", e);
+            tracing::warn!("create input redirect: {}", e);
         }
     });
 
@@ -65,7 +65,7 @@ impl ProcessState {
 
         match child.try_wait() {
             Err(e) => {
-                warn!("Error while checking status of child process: {}", e);
+                tracing::warn!("Error while checking status of child process: {}", e);
                 Self::Dead
             }
             Ok(s) => {
@@ -186,7 +186,7 @@ impl ProcessManagementService {
             child
         } else {
             // unsupported
-            warn!("Trying to spawn with shell on unsupported platform, fallback");
+            tracing::warn!("Trying to spawn with shell on unsupported platform, fallback");
             Self::generate_command(launch_command, arguments)
         }
     }

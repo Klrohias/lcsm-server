@@ -1,31 +1,13 @@
 #[macro_export]
-macro_rules! something_with_log {
-    ($status_code:expr) => {
+macro_rules! trace_error {
+    ($msg:expr, $status_code:expr) => {
         |e| {
-            use log::error;
+            use tracing::error;
 
-            error!("{}", e);
+            error!("{}: {}", $msg, e);
             $status_code
         }
     };
 }
 
-#[macro_export]
-macro_rules! internal_error_with_log {
-    () => {{
-        use axum::http::StatusCode;
-        $crate::something_with_log!(StatusCode::INTERNAL_SERVER_ERROR)
-    }};
-}
-
-#[macro_export]
-macro_rules! bad_request_with_log {
-    () => {{
-        use axum::http::StatusCode;
-        $crate::something_with_log!(StatusCode::BAD_REQUEST)
-    }};
-}
-
-pub use bad_request_with_log;
-pub use internal_error_with_log;
-pub use something_with_log;
+pub use trace_error;

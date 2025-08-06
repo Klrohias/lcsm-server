@@ -10,7 +10,7 @@ use axum::{
     response::IntoResponse,
     routing::{any, get, put},
 };
-use log::{error, info, warn};
+
 use sea_orm::EntityTrait;
 use tokio::{
     sync::{broadcast::error::RecvError, mpsc, oneshot},
@@ -18,13 +18,13 @@ use tokio::{
 };
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
+use tracing::{Instrument, instrument};
 
 use crate::{
     AppStateRef,
     entities::instance,
-    errors::{bad_request_with_log, internal_error_with_log},
+    errors::trace_error,
     services::{ProcessRef, ProcessState},
-    something_with_log,
 };
 
 use futures::{SinkExt, StreamExt};
@@ -58,6 +58,7 @@ async fn get_alive_process(state: &AppStateRef, id: u64) -> Option<ProcessRef> {
     return Some(process);
 }
 
+#[instrument(skip(state))]
 async fn start_process(
     State(state): State<AppStateRef>,
     Path(id): Path<u64>,
@@ -71,12 +72,16 @@ async fn start_process(
 
     // start process
     let db = &state.database;
-    let the_instance =
-        instance::Entity::find_by_id(i32::try_from(id).map_err(bad_request_with_log!())?)
-            .one(db)
-            .await
-            .map_err(internal_error_with_log!())?
-            .ok_or(StatusCode::NOT_FOUND)?;
+    let the_instance = instance::Entity::find_by_id(
+        i32::try_from(id).map_err(trace_error!("parse id", StatusCode::BAD_REQUEST))?,
+    )
+    .one(db)
+    .await
+    .map_err(trace_error!(
+        "one from db",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?
+    .ok_or(StatusCode::NOT_FOUND)?;
 
     let arguments = the_instance
         .arguments
@@ -94,13 +99,17 @@ async fn start_process(
             the_instance.use_shell,
         )
         .await
-        .map_err(internal_error_with_log!())?;
+        .map_err(trace_error!(
+            "spawn process",
+            StatusCode::INTERNAL_SERVER_ERROR
+        ))?;
 
     _ = state.log_manager.begin_log(id, process_ref).await;
 
     Ok(())
 }
 
+#[instrument(skip(state))]
 async fn kill_process(
     State(state): State<AppStateRef>,
     Path(id): Path<u64>,
@@ -109,16 +118,15 @@ async fn kill_process(
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    process
-        .read()
-        .await
-        .kill()
-        .await
-        .map_err(internal_error_with_log!())?;
+    process.read().await.kill().await.map_err(trace_error!(
+        "kill process",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
 
     Ok(())
 }
 
+#[instrument(skip(state))]
 async fn process_state(
     State(state): State<AppStateRef>,
     Path(id): Path<u64>,
@@ -130,6 +138,7 @@ async fn process_state(
     Ok(())
 }
 
+#[instrument(skip(state))]
 async fn terminal_ws_connect(
     State(state): State<AppStateRef>,
     Path(id): Path<u64>,
@@ -143,7 +152,7 @@ async fn terminal_ws_connect(
         .log_manager
         .get_log_begin(id)
         .await
-        .map_err(something_with_log!(0 as u64));
+        .map_err(trace_error!("get_log_begin", 0));
 
     let log_begin = log_begin.unwrap_or_else(|_| log_begin.unwrap_err());
 
@@ -153,6 +162,7 @@ async fn terminal_ws_connect(
     ))
 }
 
+#[instrument(skip(socket, process))]
 async fn terminal_ws_handler(socket: WebSocket, id: u64, process: ProcessRef) {
     let (mut socket_write, mut socket_read) = socket.split();
     let (exit_sender, mut exit_receiver) = oneshot::channel::<()>();
@@ -161,72 +171,80 @@ async fn terminal_ws_handler(socket: WebSocket, id: u64, process: ProcessRef) {
     let mut stdout = { process.read().await.get_stdout() };
     let mut stderr = { process.read().await.get_stderr() };
 
-    info!("Socket for process {} opened", id);
+    tracing::info!("Socket for process {} opened", id);
 
-    let send_task = tokio::spawn(async move {
-        use anyhow::Ok;
+    let send_task = tokio::spawn(
+        async move {
+            use anyhow::Ok;
 
-        loop {
-            tokio::select! {
-                data = output_receiver.recv(), if !output_receiver.is_closed() => {
-                    if data.is_none() {
-                        continue; // now closed :)
+            loop {
+                tokio::select! {
+                    data = output_receiver.recv(), if !output_receiver.is_closed() => {
+                        if data.is_none() {
+                            continue; // now closed :)
+                        }
+
+                        socket_write.send(Message::binary(data.unwrap())).await?;
                     }
-
-                    socket_write.send(Message::binary(data.unwrap())).await?;
-                }
-                _ = &mut exit_receiver => {
-                    socket_write.close().await?;
-                    break Ok(());
+                    _ = &mut exit_receiver => {
+                        socket_write.close().await?;
+                        break Ok(());
+                    }
                 }
             }
         }
-    });
+        .instrument(tracing::info_span!("send task")),
+    );
 
-    let output_task = tokio::spawn(async move {
-        use anyhow::Ok;
+    let output_task = tokio::spawn(
+        async move {
+            use anyhow::Ok;
 
-        loop {
-            let data = tokio::select! {
-                data = stdout.as_mut().unwrap().recv(), if stdout.is_some() => data,
-                data = stderr.as_mut().unwrap().recv(), if stderr.is_some() => data,
-                else => {
-                    break Ok(());
+            loop {
+                let data = tokio::select! {
+                    data = stdout.as_mut().unwrap().recv(), if stdout.is_some() => data,
+                    data = stderr.as_mut().unwrap().recv(), if stderr.is_some() => data,
+                    else => {
+                        break Ok(());
+                    }
+                };
+
+                if let Err(e) = data {
+                    if let RecvError::Lagged(_) = e {
+                        continue;
+                    } else {
+                        break Err(e.into());
+                    }
                 }
-            };
 
-            if let Err(e) = data {
-                if let RecvError::Lagged(l) = e {
-                    warn!("Receiver for process {} lagged {}", id, l);
-                    continue;
-                } else {
-                    break Err(e.into());
-                }
+                output_sender.send(data.unwrap()).await?;
             }
-
-            output_sender.send(data.unwrap()).await?;
         }
-    });
+        .instrument(tracing::info_span!("output task")),
+    );
 
     let input_task = { process.read().await.get_stdin() }.map(|sender| {
-        tokio::spawn(async move {
-            use anyhow::Ok;
-            // redirect stdin
-            while let Some(message) = socket_read.next().await {
-                if let Err(e) = message {
-                    return Err(e.into());
+        tokio::spawn(
+            async move {
+                use anyhow::Ok;
+                // redirect stdin
+                while let Some(message) = socket_read.next().await {
+                    if let Err(e) = message {
+                        return Err(e.into());
+                    }
+
+                    let message = message.unwrap();
+
+                    // send
+                    if let Err(e) = sender.send(message.into_data().to_vec()).await {
+                        return Err(e.into());
+                    }
                 }
 
-                let message = message.unwrap();
-
-                // send
-                if let Err(e) = sender.send(message.into_data().to_vec()).await {
-                    return Err(e.into());
-                }
+                Ok(())
             }
-
-            Ok(())
-        })
+            .instrument(tracing::info_span!("input task")),
+        )
     });
 
     let error = tokio::select! {
@@ -235,13 +253,13 @@ async fn terminal_ws_handler(socket: WebSocket, id: u64, process: ProcessRef) {
     };
 
     if let Some(err) = error {
-        error!("Stdio for process {} closed with error: {}", id, err);
+        tracing::error!("Stdio for process {} closed with error: {}", id, err);
     }
 
     // close connection
     _ = exit_sender.send(());
     _ = send_task.await;
-    info!("Socket for process {} closed", id);
+    tracing::info!("Socket for process {} closed", id);
 }
 
 fn just_get_error(r: Result<Result<(), anyhow::Error>, JoinError>) -> Option<anyhow::Error> {
@@ -254,6 +272,7 @@ fn just_get_error(r: Result<Result<(), anyhow::Error>, JoinError>) -> Option<any
     }
 }
 
+#[instrument(skip(state, request))]
 async fn fetch_process_log(
     Path(id): Path<u64>,
     State(state): State<AppStateRef>,
