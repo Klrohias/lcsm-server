@@ -14,8 +14,9 @@ use axum::{
 use axum_extra::extract::Query as ExtraQuery;
 use json_patch::{PatchOperation, patch as apply_json_patch};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, EntityTrait, IntoActiveModel,
-    PaginatorTrait, QueryFilter,
+    ActiveModelTrait,
+    ActiveValue::{NotSet, Unchanged},
+    ColumnTrait, EntityTrait, IntoActiveModel, PaginatorTrait, QueryFilter,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -139,12 +140,9 @@ async fn update_instance(
     let updated: instance::Model = serde_json::from_value(value)
         .map_err(trace_error!("get new model", StatusCode::BAD_REQUEST))?;
 
-    if updated.id != model.id {
-        // avoid changing the id
-        return Err(StatusCode::NOT_ACCEPTABLE);
-    }
+    let mut updated = updated.into_active_model().reset_all();
+    updated.id = Unchanged(id);
 
-    let updated = updated.into_active_model().reset_all();
     let res = updated.update(db).await.map_err(trace_error!(
         "update to db",
         StatusCode::INTERNAL_SERVER_ERROR

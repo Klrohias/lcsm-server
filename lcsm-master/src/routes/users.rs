@@ -9,8 +9,8 @@ use axum::{
 use bcrypt::{DEFAULT_COST, hash, verify};
 use json_patch::Patch;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, ModelTrait, PaginatorTrait,
-    QueryFilter, Set,
+    ActiveModelTrait, ActiveValue::Unchanged, ColumnTrait, EntityTrait, IntoActiveModel,
+    ModelTrait, PaginatorTrait, QueryFilter, Set,
 };
 use serde::{Deserialize, Serialize};
 use tower::ServiceBuilder;
@@ -265,8 +265,9 @@ pub async fn update_user(
     let updated_user: user::Model = serde_json::from_value(user_json)
         .map_err(trace_error!("load patched model", StatusCode::BAD_REQUEST))?;
 
-    let mut active_model = updated_user.into_active_model();
-    active_model.id = Set(id);
+    let mut active_model = updated_user.into_active_model().reset_all();
+    active_model.id = Unchanged(id);
+    active_model.password_hash = Unchanged(user.password_hash);
 
     let updated_user = active_model.update(db).await.map_err(trace_error!(
         "update user",
