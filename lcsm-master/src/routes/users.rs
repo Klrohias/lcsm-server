@@ -1,34 +1,66 @@
 use axum::{
-    Router,
-    extract::{Extension, Path, Request, State},
+    Extension, Router,
+    extract::{Path, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::Json,
     routing::{delete, get, patch, post},
 };
-use bcrypt::{DEFAULT_COST, hash};
+use bcrypt::{DEFAULT_COST, hash, verify};
 use json_patch::Patch;
-use sea_orm::{ActiveModelTrait, IntoActiveModel, Set, entity::prelude::*};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, ModelTrait, PaginatorTrait,
+    QueryFilter, Set,
+};
 use serde::{Deserialize, Serialize};
+use tower::ServiceBuilder;
 
 use crate::{
-    AppStateRef, bad_request_with_log, entities::user, internal_error_with_log, services::Claims,
+    AppStateRef, bad_request_with_log, entities::user, internal_error_with_log, services::auth,
 };
 
-async fn admin_middleware(
-    Extension(claims): Extension<Claims>,
-    request: Request,
-    next: Next,
-) -> Result<impl axum::response::IntoResponse, StatusCode> {
-    if claims.user_type != "administrator" {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    Ok(next.run(request).await)
+pub fn get_routes(state: &AppStateRef) -> Router {
+    Router::new()
+        // ---
+        .route("/", post(create_user))
+        .route_layer(
+            ServiceBuilder::new()
+                .layer(middleware::from_fn_with_state(
+                    state.auth_service.clone(),
+                    auth::jwt_middleware,
+                ))
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    create_user_middleware,
+                )),
+        )
+        // ---
+        .route("/", get(get_users))
+        .route("/:id", get(get_user))
+        .route("/:id", delete(delete_user))
+        .route("/:id", patch(update_user))
+        .route_layer(
+            ServiceBuilder::new()
+                .layer(middleware::from_fn_with_state(
+                    state.auth_service.clone(),
+                    auth::jwt_middleware,
+                ))
+                .layer(middleware::from_fn(auth::admin_middleware)),
+        )
+        // ---
+        .route("/me", get(get_current_user))
+        .route_layer(middleware::from_fn_with_state(
+            state.auth_service.clone(),
+            auth::jwt_middleware,
+        ))
+        // ---
+        .route("/login", post(login))
+        .with_state(state.clone())
 }
 
 async fn create_user_middleware(
     State(state): State<AppStateRef>,
-    Extension(claims): Extension<Claims>,
+    Extension(claims): Extension<auth::Claims>,
     request: Request,
     next: Next,
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
@@ -193,20 +225,57 @@ pub async fn update_user(
     Ok(Json(UserResponse::from(updated_user)))
 }
 
-pub fn get_routes(state: &AppStateRef) -> Router {
-    Router::new()
-        // ---
-        .route("/", post(create_user))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            create_user_middleware,
-        ))
-        // ---
-        .route("/", get(get_users))
-        .route("/:id", get(get_user))
-        .route("/:id", delete(delete_user))
-        .route("/:id", patch(update_user))
-        .route_layer(middleware::from_fn(admin_middleware))
-        // ---
-        .with_state(state.clone())
+pub async fn get_current_user(
+    State(state): State<AppStateRef>,
+    Extension(claims): Extension<auth::Claims>,
+) -> Result<Json<UserResponse>, StatusCode> {
+    let db = &state.database_connection;
+
+    let user =
+        user::Entity::find_by_id(i32::try_from(claims.id).map_err(internal_error_with_log!())?)
+            .one(db)
+            .await
+            .map_err(internal_error_with_log!())?
+            .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(UserResponse::from(user)))
+}
+
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginResponse {
+    pub access_token: String,
+}
+
+pub async fn login(
+    State(state): State<AppStateRef>,
+    Json(request): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>, StatusCode> {
+    let db = &state.database_connection;
+    let auth_service = state.auth_service.read().await;
+
+    let user = user::Entity::find()
+        .filter(user::Column::Email.eq(request.email))
+        .one(db)
+        .await
+        .map_err(internal_error_with_log!())?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !verify(&request.password, &user.password_hash).map_err(internal_error_with_log!())? {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_service
+        .create_jwt(user.id, &user.email, &user.user_type)
+        .map_err(internal_error_with_log!())?;
+
+    Ok(Json(LoginResponse {
+        access_token: token,
+    }))
 }
