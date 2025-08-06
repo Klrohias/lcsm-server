@@ -9,6 +9,7 @@ use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 async fn build_database_connection() -> DatabaseConnection {
     let database_connection_string = env::var("LCSM_DATABASE").expect("LCSM_DATABASE is missing");
@@ -54,9 +55,16 @@ async fn build_app() -> Router {
     app
 }
 
+fn init_tracing() {
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env())
+        .with(fmt::layer())
+        .init();
+}
+
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    init_tracing();
 
     let listen_addr = env::var("LCSM_LISTEN_ADDR").expect("LCSM_LISTEN_ADDR is missing");
     let listener = TcpListener::bind(listen_addr)

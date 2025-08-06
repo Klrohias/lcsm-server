@@ -1,6 +1,6 @@
 use axum::{
     Extension, Router,
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::Json,
@@ -14,9 +14,14 @@ use sea_orm::{
 };
 use serde::{Deserialize, Serialize};
 use tower::ServiceBuilder;
+use tracing::instrument;
 
 use crate::{
-    AppStateRef, bad_request_with_log, entities::user, internal_error_with_log, services::auth,
+    AppStateRef,
+    entities::user,
+    services::auth,
+    trace_error,
+    transfer::{PaginationOptions, PaginationResponse},
 };
 
 pub fn get_routes(state: &AppStateRef) -> Router {
@@ -58,6 +63,7 @@ pub fn get_routes(state: &AppStateRef) -> Router {
         .with_state(state.clone())
 }
 
+#[instrument(skip(state, request, next))]
 async fn create_user_middleware(
     State(state): State<AppStateRef>,
     Extension(claims): Extension<auth::Claims>,
@@ -67,10 +73,10 @@ async fn create_user_middleware(
     let db = &state.database_connection;
 
     // Check if any users exist
-    let user_count = user::Entity::find()
-        .count(db)
-        .await
-        .map_err(internal_error_with_log!())?;
+    let user_count = user::Entity::find().count(db).await.map_err(trace_error!(
+        "check user exists",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
 
     // Allow first user creation or admin users
     if user_count == 0 || claims.user_type == "administrator" {
@@ -80,7 +86,7 @@ async fn create_user_middleware(
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct CreateUserRequest {
     pub name: String,
     pub email: String,
@@ -107,6 +113,7 @@ impl From<user::Model> for UserResponse {
     }
 }
 
+#[instrument(skip_all, fields(user.name = request.name, user.type = request.user_type))]
 pub async fn create_user(
     State(state): State<AppStateRef>,
     Json(request): Json<CreateUserRequest>,
@@ -114,10 +121,10 @@ pub async fn create_user(
     let db = &state.database_connection;
 
     // check if this is the first user
-    let user_count = user::Entity::find()
-        .count(db)
-        .await
-        .map_err(internal_error_with_log!())?;
+    let user_count = user::Entity::find().count(db).await.map_err(trace_error!(
+        "check user exists",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
 
     // the first user created must be administrator
     let user_type = if user_count == 0 {
@@ -127,7 +134,10 @@ pub async fn create_user(
     };
 
     // Hash the password
-    let password_hash = hash(request.password, DEFAULT_COST).map_err(internal_error_with_log!())?;
+    let password_hash = hash(request.password, DEFAULT_COST).map_err(trace_error!(
+        "hash password",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
 
     let new_user = user::ActiveModel {
         name: Set(request.name),
@@ -137,14 +147,15 @@ pub async fn create_user(
         ..Default::default()
     };
 
-    let created_user = new_user
-        .insert(db)
-        .await
-        .map_err(internal_error_with_log!())?;
+    let created_user = new_user.insert(db).await.map_err(trace_error!(
+        "insert user",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
 
     Ok(Json(UserResponse::from(created_user)))
 }
 
+#[instrument(skip(state))]
 pub async fn get_user(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
@@ -154,26 +165,58 @@ pub async fn get_user(
     let user = user::Entity::find_by_id(id)
         .one(db)
         .await
-        .map_err(internal_error_with_log!())?
+        .map_err(trace_error!("find user", StatusCode::INTERNAL_SERVER_ERROR))?
         .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(UserResponse::from(user)))
 }
 
-pub async fn get_users(
-    State(state): State<AppStateRef>,
-) -> Result<Json<Vec<UserResponse>>, StatusCode> {
-    let db = &state.database_connection;
-
-    let users = user::Entity::find()
-        .all(db)
-        .await
-        .map_err(internal_error_with_log!())?;
-
-    let response: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
-    Ok(Json(response))
+#[derive(Debug, Deserialize)]
+pub struct UsersQuery {
+    #[serde(rename = "id")]
+    pub ids: Option<Vec<u64>>,
 }
 
+#[instrument(skip(state))]
+pub async fn get_users(
+    State(state): State<AppStateRef>,
+    Query(pagination): Query<PaginationOptions>,
+    Query(query): Query<UsersQuery>,
+) -> Result<Json<PaginationResponse<UserResponse>>, StatusCode> {
+    let db = &state.database_connection;
+    let page = pagination.page.unwrap_or(1);
+    let page_size = pagination.page_size.unwrap_or(10);
+
+    let mut paginator = user::Entity::find();
+    if query.ids.is_some() {
+        paginator = paginator.filter(user::Column::Id.is_in(query.ids.unwrap()));
+    }
+
+    let paginator = paginator.paginate(db, page_size);
+    let num = paginator.num_items_and_pages().await.map_err(trace_error!(
+        "num_items_and_pages",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
+
+    let models = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(trace_error!(
+            "fetch_page",
+            StatusCode::INTERNAL_SERVER_ERROR
+        ))?
+        .into_iter()
+        .map(|x| UserResponse::from(x))
+        .collect();
+
+    Ok(Json(PaginationResponse {
+        page_count: num.number_of_pages,
+        total: num.number_of_items,
+        data: models,
+    }))
+}
+
+#[instrument(skip(state))]
 pub async fn delete_user(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
@@ -183,14 +226,18 @@ pub async fn delete_user(
     let user = user::Entity::find_by_id(id)
         .one(db)
         .await
-        .map_err(internal_error_with_log!())?
+        .map_err(trace_error!("find user", StatusCode::INTERNAL_SERVER_ERROR))?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    user.delete(db).await.map_err(internal_error_with_log!())?;
+    user.delete(db).await.map_err(trace_error!(
+        "delete user",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[instrument(skip(state))]
 pub async fn update_user(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
@@ -201,42 +248,49 @@ pub async fn update_user(
     let user = user::Entity::find_by_id(id)
         .one(db)
         .await
-        .map_err(internal_error_with_log!())?
+        .map_err(trace_error!("find user", StatusCode::INTERNAL_SERVER_ERROR))?
         .ok_or(StatusCode::NOT_FOUND)?;
 
     // Convert user to JSON for patch application
-    let mut user_json = serde_json::to_value(&user).map_err(internal_error_with_log!())?;
+    let mut user_json = serde_json::to_value(&user).map_err(trace_error!(
+        "to serde value",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
 
     // Apply patch
-    json_patch::patch(&mut user_json, &patch).map_err(bad_request_with_log!())?;
+    json_patch::patch(&mut user_json, &patch)
+        .map_err(trace_error!("load json patch", StatusCode::BAD_REQUEST))?;
 
     // Convert back to user model
-    let updated_user: user::Model =
-        serde_json::from_value(user_json).map_err(bad_request_with_log!())?;
+    let updated_user: user::Model = serde_json::from_value(user_json)
+        .map_err(trace_error!("load patched model", StatusCode::BAD_REQUEST))?;
 
     let mut active_model = updated_user.into_active_model();
     active_model.id = Set(id);
 
-    let updated_user = active_model
-        .update(db)
-        .await
-        .map_err(internal_error_with_log!())?;
+    let updated_user = active_model.update(db).await.map_err(trace_error!(
+        "update user",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?;
 
     Ok(Json(UserResponse::from(updated_user)))
 }
 
+#[instrument(skip(state))]
 pub async fn get_current_user(
     State(state): State<AppStateRef>,
     Extension(claims): Extension<auth::Claims>,
 ) -> Result<Json<UserResponse>, StatusCode> {
     let db = &state.database_connection;
 
-    let user =
-        user::Entity::find_by_id(i32::try_from(claims.id).map_err(internal_error_with_log!())?)
-            .one(db)
-            .await
-            .map_err(internal_error_with_log!())?
-            .ok_or(StatusCode::NOT_FOUND)?;
+    let user = user::Entity::find_by_id(
+        i32::try_from(claims.id)
+            .map_err(trace_error!("parse id", StatusCode::INTERNAL_SERVER_ERROR))?,
+    )
+    .one(db)
+    .await
+    .map_err(trace_error!("find user", StatusCode::INTERNAL_SERVER_ERROR))?
+    .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(UserResponse::from(user)))
 }
@@ -253,6 +307,7 @@ pub struct LoginResponse {
     pub access_token: String,
 }
 
+#[instrument(skip_all, fields(user.email = request.email))]
 pub async fn login(
     State(state): State<AppStateRef>,
     Json(request): Json<LoginRequest>,
@@ -264,16 +319,22 @@ pub async fn login(
         .filter(user::Column::Email.eq(request.email))
         .one(db)
         .await
-        .map_err(internal_error_with_log!())?
+        .map_err(trace_error!("find user", StatusCode::INTERNAL_SERVER_ERROR))?
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    if !verify(&request.password, &user.password_hash).map_err(internal_error_with_log!())? {
+    if !verify(&request.password, &user.password_hash).map_err(trace_error!(
+        "bcrypt verify",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))? {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
     let token = auth_service
         .create_jwt(user.id, &user.email, &user.user_type)
-        .map_err(internal_error_with_log!())?;
+        .map_err(trace_error!(
+            "create_jwt",
+            StatusCode::INTERNAL_SERVER_ERROR
+        ))?;
 
     Ok(Json(LoginResponse {
         access_token: token,
