@@ -1,43 +1,95 @@
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     middleware,
-    routing::get,
+    response::Response,
+    routing::{delete, get, post},
 };
 use json_patch::Patch;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Unchanged, ColumnTrait, EntityTrait, IntoActiveModel,
     ModelTrait, PaginatorTrait, QueryFilter, Set,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tower::ServiceBuilder;
 use tracing::instrument;
 
 use crate::{
-    AppStateRef,
+    AppStateRef, api_error,
     entities::slave,
-    services::auth,
+    services::{
+        auth::{self, Claims},
+        permission_control,
+    },
     trace_error,
     transfer::{PaginationOptions, PaginationResponse},
 };
 
 pub fn get_routes(state: &AppStateRef) -> Router {
+    let auth_middleware =
+        middleware::from_fn_with_state(state.auth_service.clone(), auth::jwt_middleware);
+    let admin_middleware = middleware::from_fn_with_state(
+        state.permission_service.clone(),
+        permission_control::admin_middleware,
+    );
+
     Router::new()
-        .route("/", get(get_slaves).post(create_slave))
-        .route(
-            "/:id",
-            get(get_slave).delete(delete_slave).patch(update_slave),
-        )
+        // ---
+        .route("/", get(get_slaves))
+        .route("/:id", get(get_slave))
+        .route_layer(middleware::from_fn_with_state(
+            state.auth_service.clone(),
+            auth::jwt_middleware,
+        ))
+        // ---
+        .route("/", post(create_slave))
+        .route("/:id", delete(delete_slave).patch(update_slave))
         .route_layer(
             ServiceBuilder::new()
-                .layer(middleware::from_fn_with_state(
-                    state.auth_service.clone(),
-                    auth::jwt_middleware,
-                ))
-                .layer(middleware::from_fn(auth::admin_middleware)),
+                .layer(auth_middleware.clone())
+                .layer(admin_middleware.clone()),
         )
         .with_state(state.clone())
+}
+
+#[derive(Serialize)]
+pub struct BirefSlave {
+    pub id: i32,
+    pub name: String,
+    pub description: String,
+}
+
+impl From<slave::Model> for BirefSlave {
+    fn from(value: slave::Model) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            description: value.description,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum SlaveResponse {
+    Detailed(slave::Model),
+    Biref(BirefSlave),
+}
+
+impl SlaveResponse {
+    fn into_biref(self) -> Self {
+        match self {
+            Self::Detailed(v) => Self::Biref(v.into()),
+            Self::Biref(v) => Self::Biref(v),
+        }
+    }
+}
+
+impl From<slave::Model> for SlaveResponse {
+    fn from(value: slave::Model) -> Self {
+        Self::Detailed(value)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +104,7 @@ pub struct CreateSlaveRequest {
 pub async fn create_slave(
     State(state): State<AppStateRef>,
     Json(request): Json<CreateSlaveRequest>,
-) -> Result<Json<slave::Model>, StatusCode> {
+) -> Result<Json<slave::Model>, Response> {
     let db = &state.database_connection;
 
     let new_slave = slave::ActiveModel {
@@ -75,8 +127,11 @@ pub async fn create_slave(
 pub async fn get_slave(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
-) -> Result<Json<slave::Model>, StatusCode> {
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<SlaveResponse>, Response> {
     let db = &state.database_connection;
+
+    let is_admin = state.permission_service.is_administrator(claims.id).await;
 
     let slave = slave::Entity::find_by_id(id)
         .one(db)
@@ -85,7 +140,13 @@ pub async fn get_slave(
             "find slave",
             StatusCode::INTERNAL_SERVER_ERROR
         ))?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or(api_error!(StatusCode::NOT_FOUND))?;
+
+    let slave = if is_admin {
+        slave.into()
+    } else {
+        SlaveResponse::from(slave).into_biref()
+    };
 
     Ok(Json(slave))
 }
@@ -101,7 +162,8 @@ pub async fn get_slaves(
     State(state): State<AppStateRef>,
     Query(pagination): Query<PaginationOptions>,
     Query(query): Query<SlavesQuery>,
-) -> Result<Json<PaginationResponse<slave::Model>>, StatusCode> {
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<PaginationResponse<SlaveResponse>>, Response> {
     let db = &state.database_connection;
     let page = pagination.page.unwrap_or(1);
     let page_size = pagination.page_size.unwrap_or(10);
@@ -117,10 +179,21 @@ pub async fn get_slaves(
         StatusCode::INTERNAL_SERVER_ERROR
     ))?;
 
-    let models = paginator.fetch_page(page - 1).await.map_err(trace_error!(
-        "fetch_page",
-        StatusCode::INTERNAL_SERVER_ERROR
-    ))?;
+    let is_admin = state.permission_service.is_administrator(claims.id).await;
+
+    let models = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(trace_error!(
+            "fetch_page",
+            StatusCode::INTERNAL_SERVER_ERROR
+        ))?
+        .into_iter()
+        .map(|x| {
+            let slave = SlaveResponse::from(x);
+            if is_admin { slave } else { slave.into_biref() }
+        })
+        .collect();
 
     Ok(Json(PaginationResponse {
         page_count: num.number_of_pages,
@@ -133,7 +206,7 @@ pub async fn get_slaves(
 pub async fn delete_slave(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<StatusCode, Response> {
     let db = &state.database_connection;
 
     let slave = slave::Entity::find_by_id(id)
@@ -143,7 +216,7 @@ pub async fn delete_slave(
             "find slave",
             StatusCode::INTERNAL_SERVER_ERROR
         ))?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or(api_error!(StatusCode::NOT_FOUND))?;
 
     slave.delete(db).await.map_err(trace_error!(
         "delete slave",
@@ -158,7 +231,7 @@ pub async fn update_slave(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
     Json(patch): Json<Patch>,
-) -> Result<Json<slave::Model>, StatusCode> {
+) -> Result<Json<slave::Model>, Response> {
     let db = &state.database_connection;
 
     let slave = slave::Entity::find_by_id(id)
@@ -168,7 +241,7 @@ pub async fn update_slave(
             "find slave",
             StatusCode::INTERNAL_SERVER_ERROR
         ))?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or(api_error!(StatusCode::NOT_FOUND))?;
 
     let mut slave_json = serde_json::to_value(&slave).map_err(trace_error!(
         "to serde value",

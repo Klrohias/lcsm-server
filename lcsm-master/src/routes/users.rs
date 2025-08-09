@@ -3,10 +3,11 @@ use axum::{
     extract::{Path, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
-    response::Json,
-    routing::{delete, get, patch, post},
+    response::{Json, Response},
+    routing::{delete, get, patch, post, put},
 };
-use bcrypt::{DEFAULT_COST, hash, verify};
+use bcrypt::{DEFAULT_COST, hash};
+use futures::TryFutureExt;
 use json_patch::Patch;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Unchanged, ColumnTrait, EntityTrait, IntoActiveModel,
@@ -17,47 +18,46 @@ use tower::ServiceBuilder;
 use tracing::instrument;
 
 use crate::{
-    AppStateRef,
+    AppStateRef, api_error,
     entities::user,
-    services::auth,
+    services::{auth, permission_control},
     trace_error,
     transfer::{PaginationOptions, PaginationResponse},
 };
 
 pub fn get_routes(state: &AppStateRef) -> Router {
+    let auth_middleware =
+        middleware::from_fn_with_state(state.auth_service.clone(), auth::jwt_middleware);
+    let admin_middleware = middleware::from_fn_with_state(
+        state.permission_service.clone(),
+        permission_control::admin_middleware,
+    );
+    let create_user_middleware =
+        middleware::from_fn_with_state(state.clone(), create_user_middleware);
+
     Router::new()
         // ---
         .route("/", post(create_user))
         .route_layer(
             ServiceBuilder::new()
-                .layer(middleware::from_fn_with_state(
-                    state.auth_service.clone(),
-                    auth::jwt_middleware,
-                ))
-                .layer(middleware::from_fn_with_state(
-                    state.clone(),
-                    create_user_middleware,
-                )),
+                .layer(auth_middleware.clone())
+                .layer(create_user_middleware),
         )
         // ---
         .route("/", get(get_users))
         .route("/:id", get(get_user))
         .route("/:id", delete(delete_user))
         .route("/:id", patch(update_user))
+        .route("/:id/ban", put(ban_user))
+        .route("/:id/ban", delete(unban_user))
         .route_layer(
             ServiceBuilder::new()
-                .layer(middleware::from_fn_with_state(
-                    state.auth_service.clone(),
-                    auth::jwt_middleware,
-                ))
-                .layer(middleware::from_fn(auth::admin_middleware)),
+                .layer(auth_middleware.clone())
+                .layer(admin_middleware.clone()),
         )
         // ---
         .route("/me", get(get_current_user))
-        .route_layer(middleware::from_fn_with_state(
-            state.auth_service.clone(),
-            auth::jwt_middleware,
-        ))
+        .route_layer(auth_middleware.clone())
         // ---
         .route("/login", post(login))
         .with_state(state.clone())
@@ -69,7 +69,7 @@ async fn create_user_middleware(
     Extension(claims): Extension<auth::Claims>,
     request: Request,
     next: Next,
-) -> Result<impl axum::response::IntoResponse, StatusCode> {
+) -> Result<impl axum::response::IntoResponse, Response> {
     let db = &state.database_connection;
 
     // Check if any users exist
@@ -78,11 +78,13 @@ async fn create_user_middleware(
         StatusCode::INTERNAL_SERVER_ERROR
     ))?;
 
+    let is_admin = state.permission_service.is_administrator(claims.id).await;
+
     // Allow first user creation or admin users
-    if user_count == 0 || claims.user_type == "administrator" {
+    if user_count == 0 || is_admin {
         Ok(next.run(request).await)
     } else {
-        Err(StatusCode::FORBIDDEN)
+        Err(api_error!(StatusCode::FORBIDDEN))
     }
 }
 
@@ -117,7 +119,7 @@ impl From<user::Model> for UserResponse {
 pub async fn create_user(
     State(state): State<AppStateRef>,
     Json(request): Json<CreateUserRequest>,
-) -> Result<Json<UserResponse>, StatusCode> {
+) -> Result<Json<UserResponse>, Response> {
     let db = &state.database_connection;
 
     // check if this is the first user
@@ -159,16 +161,12 @@ pub async fn create_user(
 pub async fn get_user(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
-) -> Result<Json<UserResponse>, StatusCode> {
-    let db = &state.database_connection;
-
-    let user = user::Entity::find_by_id(id)
-        .one(db)
-        .await
-        .map_err(trace_error!("find user", StatusCode::INTERNAL_SERVER_ERROR))?
-        .ok_or(StatusCode::NOT_FOUND)?;
-
-    Ok(Json(UserResponse::from(user)))
+) -> Result<Json<UserResponse>, Response> {
+    match state.user_service.find_user_by_id(id).await {
+        Ok(v) => Ok(Json(UserResponse::from(v))),
+        Err(sea_orm::DbErr::RecordNotFound(_)) => return Err(api_error!(StatusCode::NOT_FOUND)),
+        Err(e) => return Err(trace_error!("find user", StatusCode::NOT_FOUND)(e)),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -182,7 +180,7 @@ pub async fn get_users(
     State(state): State<AppStateRef>,
     Query(pagination): Query<PaginationOptions>,
     Query(query): Query<UsersQuery>,
-) -> Result<Json<PaginationResponse<UserResponse>>, StatusCode> {
+) -> Result<Json<PaginationResponse<UserResponse>>, Response> {
     let db = &state.database_connection;
     let page = pagination.page.unwrap_or(1);
     let page_size = pagination.page_size.unwrap_or(10);
@@ -220,19 +218,19 @@ pub async fn get_users(
 pub async fn delete_user(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
-) -> Result<StatusCode, StatusCode> {
-    let db = &state.database_connection;
+) -> Result<StatusCode, Response> {
+    let user = match state.user_service.find_user_by_id(id).await {
+        Ok(v) => v,
+        Err(sea_orm::DbErr::RecordNotFound(_)) => return Err(api_error!(StatusCode::NOT_FOUND)),
+        Err(e) => return Err(trace_error!("find user", StatusCode::NOT_FOUND)(e)),
+    };
 
-    let user = user::Entity::find_by_id(id)
-        .one(db)
+    user.delete(&state.database_connection)
         .await
-        .map_err(trace_error!("find user", StatusCode::INTERNAL_SERVER_ERROR))?
-        .ok_or(StatusCode::NOT_FOUND)?;
-
-    user.delete(db).await.map_err(trace_error!(
-        "delete user",
-        StatusCode::INTERNAL_SERVER_ERROR
-    ))?;
+        .map_err(trace_error!(
+            "delete user",
+            StatusCode::INTERNAL_SERVER_ERROR
+        ))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -242,14 +240,14 @@ pub async fn update_user(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
     Json(patch): Json<Patch>,
-) -> Result<Json<UserResponse>, StatusCode> {
+) -> Result<Json<UserResponse>, Response> {
     let db = &state.database_connection;
 
-    let user = user::Entity::find_by_id(id)
-        .one(db)
-        .await
-        .map_err(trace_error!("find user", StatusCode::INTERNAL_SERVER_ERROR))?
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let user = match state.user_service.find_user_by_id(id).await {
+        Ok(v) => v,
+        Err(sea_orm::DbErr::RecordNotFound(_)) => return Err(api_error!(StatusCode::NOT_FOUND)),
+        Err(e) => return Err(trace_error!("find user", StatusCode::NOT_FOUND)(e)),
+    };
 
     // Convert user to JSON for patch application
     let mut user_json = serde_json::to_value(&user).map_err(trace_error!(
@@ -281,24 +279,17 @@ pub async fn update_user(
 pub async fn get_current_user(
     State(state): State<AppStateRef>,
     Extension(claims): Extension<auth::Claims>,
-) -> Result<Json<UserResponse>, StatusCode> {
-    let db = &state.database_connection;
-
-    let user = user::Entity::find_by_id(
-        i32::try_from(claims.id)
-            .map_err(trace_error!("parse id", StatusCode::INTERNAL_SERVER_ERROR))?,
-    )
-    .one(db)
-    .await
-    .map_err(trace_error!("find user", StatusCode::INTERNAL_SERVER_ERROR))?
-    .ok_or(StatusCode::NOT_FOUND)?;
-
-    Ok(Json(UserResponse::from(user)))
+) -> Result<Json<UserResponse>, Response> {
+    match state.user_service.find_user_by_id(claims.id).await {
+        Ok(v) => Ok(Json(UserResponse::from(v))),
+        Err(sea_orm::DbErr::RecordNotFound(_)) => return Err(api_error!(StatusCode::NOT_FOUND)),
+        Err(e) => return Err(trace_error!("find user", StatusCode::NOT_FOUND)(e)),
+    }
 }
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
-    pub email: String,
+    pub username: String,
     pub password: String,
 }
 
@@ -308,30 +299,22 @@ pub struct LoginResponse {
     pub access_token: String,
 }
 
-#[instrument(skip_all, fields(user.email = request.email))]
+#[instrument(skip_all, fields(user.email = request.username))]
 pub async fn login(
     State(state): State<AppStateRef>,
     Json(request): Json<LoginRequest>,
-) -> Result<Json<LoginResponse>, StatusCode> {
-    let db = &state.database_connection;
-    let auth_service = state.auth_service.read().await;
+) -> Result<Json<LoginResponse>, Response> {
+    // verify the user
+    let user = state
+        .user_service
+        .verify_user_creds(request.username, request.password)
+        .map_err(trace_error!("verify user creds", StatusCode::UNAUTHORIZED))
+        .await?;
 
-    let user = user::Entity::find()
-        .filter(user::Column::Email.eq(request.email))
-        .one(db)
-        .await
-        .map_err(trace_error!("find user", StatusCode::INTERNAL_SERVER_ERROR))?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-
-    if !verify(&request.password, &user.password_hash).map_err(trace_error!(
-        "bcrypt verify",
-        StatusCode::INTERNAL_SERVER_ERROR
-    ))? {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
-    let token = auth_service
-        .create_jwt(user.id, &user.email, &user.user_type)
+    // generate jwt token
+    let token = state
+        .auth_service
+        .create_jwt(user.id, &user.email)
         .map_err(trace_error!(
             "create_jwt",
             StatusCode::INTERNAL_SERVER_ERROR
@@ -340,4 +323,49 @@ pub async fn login(
     Ok(Json(LoginResponse {
         access_token: token,
     }))
+}
+
+#[instrument(skip(state))]
+pub async fn ban_user(
+    State(state): State<AppStateRef>,
+    Path(id): Path<i32>,
+    Extension(claims): Extension<auth::Claims>,
+) -> Result<(), Response> {
+    // cannot ban self
+    if id == claims.id {
+        return Err(api_error!(
+            "you can't ban yourself".to_string(),
+            StatusCode::NOT_ACCEPTABLE
+        ));
+    }
+
+    // set ban
+    state
+        .user_service
+        .set_user_banned(id, true)
+        .await
+        .map_err(trace_error!(
+            "set user banned",
+            StatusCode::INTERNAL_SERVER_ERROR
+        ))?;
+
+    Ok(())
+}
+
+#[instrument(skip(state))]
+pub async fn unban_user(
+    State(state): State<AppStateRef>,
+    Path(id): Path<i32>,
+) -> Result<(), Response> {
+    // set ban
+    state
+        .user_service
+        .set_user_banned(id, false)
+        .await
+        .map_err(trace_error!(
+            "set user banned",
+            StatusCode::INTERNAL_SERVER_ERROR
+        ))?;
+
+    Ok(())
 }

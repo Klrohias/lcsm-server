@@ -527,6 +527,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derivative"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcc3dd5e9e9c0b295d6e1e4d811fb6f157d5ffd784b8d202fc62eac8035a770b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1217,6 +1228,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "typed-container",
 ]
 
 [[package]]
@@ -2934,6 +2946,15 @@ dependencies = [
  "sha1",
  "thiserror 2.0.12",
  "utf-8",
+]
+
+[[package]]
+name = "typed-container"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4810dae301dc59010ac4db1ac806fea6bc85404333e3a4a088cbcca30c76cf5f"
+dependencies = [
+ "derivative",
 ]
 
 [[package]]

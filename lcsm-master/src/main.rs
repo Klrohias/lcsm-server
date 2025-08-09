@@ -3,13 +3,14 @@ use std::{env, sync::Arc, time::Duration};
 use axum::Router;
 use lcsm_master::{
     AppState, AppStateRef, routes,
-    services::{AuthService, AuthServiceRef},
+    services::{AuthService, AuthServiceRef, PermissionService, UserService},
 };
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use typed_container::Container;
 
 async fn build_database_connection() -> DatabaseConnection {
     let database_connection_string = env::var("LCSM_DATABASE").expect("LCSM_DATABASE is missing");
@@ -42,11 +43,14 @@ fn build_routes(app: Router, state: &AppStateRef) -> Router {
 
 async fn build_app() -> Router {
     // build state
-    let app_state = Arc::new(AppState::new(
-        build_database_connection().await,
-        build_auth_service(),
-    ));
+    let c = Container::new();
+    c.register_service(build_database_connection().await);
+    c.register_service(build_auth_service());
+    c.register_constructor(|c| Arc::new(PermissionService::new(c.get())));
+    c.register_constructor(|c| Arc::new(UserService::new(c.get())));
+    c.register_constructor(|c| Arc::new(AppState::from(c)));
 
+    let app_state = c.get();
     // build app
     let app = Router::new();
     let app = build_routes(app, &app_state);

@@ -11,6 +11,7 @@ pub struct Model {
     pub email: String,
     pub password_hash: String,
     pub user_type: String,
+    pub banned: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
