@@ -7,14 +7,11 @@ use sea_orm::{
 
 use crate::entities::user;
 
-fn extract_user(input: Result<Option<user::Model>, DbErr>) -> Result<user::Model, DbErr> {
-    match input {
-        Err(e) => Err(e),
-        Ok(v) => match v {
-            None => Err(DbErr::RecordNotFound(String::new())),
-            Some(v) => Ok(v),
-        },
-    }
+fn one_or_not_found(
+    input: Result<Option<user::Model>, DbErr>,
+    message: &'static str,
+) -> Result<user::Model, DbErr> {
+    input?.ok_or_else(|| DbErr::RecordNotFound(message.to_owned()))
 }
 
 pub type UserServiceRef = Arc<UserService>;
@@ -66,7 +63,7 @@ impl UserService {
             .one(&self.database_connection)
             .await;
 
-        extract_user(result)
+        one_or_not_found(result, "user not found")
     }
 
     pub async fn find_user_by_username(
@@ -78,7 +75,7 @@ impl UserService {
             .one(&self.database_connection)
             .await;
 
-        extract_user(result)
+        one_or_not_found(result, "user not found")
     }
 
     pub async fn find_user_by_email(
@@ -90,7 +87,7 @@ impl UserService {
             .one(&self.database_connection)
             .await;
 
-        extract_user(result)
+        one_or_not_found(result, "user not found")
     }
 }
 

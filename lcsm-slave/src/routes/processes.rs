@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::{ffi::OsString, path::PathBuf};
 
 use axum::{
     Router,
@@ -41,12 +41,8 @@ pub fn get_routes(state_ref: &AppStateRef) -> Router {
 }
 
 async fn get_alive_process(state: &AppStateRef, id: u64) -> Option<ProcessRef> {
-    let process = state.process_manager.get_process(id).await;
-    if process.is_none() {
-        return None;
-    }
+    let process = state.process_manager.get_process(id).await?;
 
-    let process = process.unwrap();
     let state = {
         let process_read = process.read().await;
         process_read.state().await
@@ -55,7 +51,7 @@ async fn get_alive_process(state: &AppStateRef, id: u64) -> Option<ProcessRef> {
         return None;
     }
 
-    return Some(process);
+    Some(process)
 }
 
 #[instrument(skip(state))]
@@ -89,13 +85,25 @@ async fn start_process(
         .map(|x| x.into())
         .collect::<Vec<OsString>>();
 
+    let work_dir = {
+        let path = PathBuf::from(&the_instance.work_dir);
+        if path.is_absolute() {
+            path
+        } else {
+            state
+                .instances_path
+                .join(the_instance.id.to_string())
+                .join(path)
+        }
+    };
+
     let process_ref = state
         .process_manager
         .new_process(
             id,
             the_instance.launch_command,
             arguments,
-            the_instance.work_dir,
+            work_dir,
             the_instance.use_shell,
         )
         .await

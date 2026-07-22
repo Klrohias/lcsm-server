@@ -1,7 +1,7 @@
 use axum::{
     Extension, Router,
     extract::{Path, Query, Request, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{Json, Response},
     routing::{delete, get, patch, post, put},
@@ -10,8 +10,7 @@ use bcrypt::{DEFAULT_COST, hash};
 use futures::TryFutureExt;
 use json_patch::Patch;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Unchanged, ColumnTrait, EntityTrait, IntoActiveModel,
-    ModelTrait, PaginatorTrait, QueryFilter, Set,
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
 };
 use serde::{Deserialize, Serialize};
 use tower::ServiceBuilder;
@@ -38,18 +37,14 @@ pub fn get_routes(state: &AppStateRef) -> Router {
     Router::new()
         // ---
         .route("/", post(create_user))
-        .route_layer(
-            ServiceBuilder::new()
-                .layer(auth_middleware.clone())
-                .layer(create_user_middleware),
-        )
+        .route_layer(create_user_middleware)
         // ---
         .route("/", get(get_users))
-        .route("/:id", get(get_user))
-        .route("/:id", delete(delete_user))
-        .route("/:id", patch(update_user))
-        .route("/:id/ban", put(ban_user))
-        .route("/:id/ban", delete(unban_user))
+        .route("/{id}", get(get_user))
+        .route("/{id}", delete(delete_user))
+        .route("/{id}", patch(update_user))
+        .route("/{id}/ban", put(ban_user))
+        .route("/{id}/ban", delete(unban_user))
         .route_layer(
             ServiceBuilder::new()
                 .layer(auth_middleware.clone())
@@ -66,8 +61,8 @@ pub fn get_routes(state: &AppStateRef) -> Router {
 #[instrument(skip(state, request, next))]
 async fn create_user_middleware(
     State(state): State<AppStateRef>,
-    Extension(claims): Extension<auth::Claims>,
-    request: Request,
+    headers: HeaderMap,
+    mut request: Request,
     next: Next,
 ) -> Result<impl axum::response::IntoResponse, Response> {
     let db = &state.database_connection;
@@ -78,10 +73,31 @@ async fn create_user_middleware(
         StatusCode::INTERNAL_SERVER_ERROR
     ))?;
 
-    let is_admin = state.permission_service.is_administrator(claims.id).await;
+    if user_count == 0 {
+        return Ok(next.run(request).await);
+    }
 
-    // Allow first user creation or admin users
-    if user_count == 0 || is_admin {
+    let auth_header = headers
+        .get("authorization")
+        .ok_or(api_error!(StatusCode::UNAUTHORIZED))?
+        .to_str()
+        .map_err(trace_error!(
+            "decode authorization header",
+            StatusCode::UNAUTHORIZED
+        ))?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(api_error!(StatusCode::UNAUTHORIZED));
+    }
+
+    let claims = state
+        .auth_service
+        .decode_claims(&auth_header[7..])
+        .map_err(trace_error!("decode jwt claims", StatusCode::UNAUTHORIZED))?;
+
+    let is_admin = state.permission_service.is_administrator(claims.id).await;
+    if is_admin {
+        request.extensions_mut().insert(claims);
         Ok(next.run(request).await)
     } else {
         Err(api_error!(StatusCode::FORBIDDEN))
@@ -89,6 +105,7 @@ async fn create_user_middleware(
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateUserRequest {
     pub name: String,
     pub email: String,
@@ -97,6 +114,7 @@ pub struct CreateUserRequest {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserResponse {
     pub id: i32,
     pub name: String,
@@ -172,7 +190,7 @@ pub async fn get_user(
 #[derive(Debug, Deserialize)]
 pub struct UsersQuery {
     #[serde(rename = "id")]
-    pub ids: Option<Vec<u64>>,
+    pub ids: Option<Vec<i32>>,
 }
 
 #[instrument(skip(state))]
@@ -182,12 +200,11 @@ pub async fn get_users(
     Query(query): Query<UsersQuery>,
 ) -> Result<Json<PaginationResponse<UserResponse>>, Response> {
     let db = &state.database_connection;
-    let page = pagination.page.unwrap_or(1);
-    let page_size = pagination.page_size.unwrap_or(10);
+    let (page, page_size) = pagination.normalized();
 
-    let mut paginator = user::Entity::find();
-    if query.ids.is_some() {
-        paginator = paginator.filter(user::Column::Id.is_in(query.ids.unwrap()));
+    let mut paginator = user::Entity::find().order_by_asc(user::Column::Id);
+    if let Some(ids) = query.ids {
+        paginator = paginator.filter(user::Column::Id.is_in(ids));
     }
 
     let paginator = paginator.paginate(db, page_size);
@@ -204,7 +221,7 @@ pub async fn get_users(
             StatusCode::INTERNAL_SERVER_ERROR
         ))?
         .into_iter()
-        .map(|x| UserResponse::from(x))
+        .map(UserResponse::from)
         .collect();
 
     Ok(Json(PaginationResponse {
@@ -219,18 +236,17 @@ pub async fn delete_user(
     State(state): State<AppStateRef>,
     Path(id): Path<i32>,
 ) -> Result<StatusCode, Response> {
-    let user = match state.user_service.find_user_by_id(id).await {
-        Ok(v) => v,
-        Err(sea_orm::DbErr::RecordNotFound(_)) => return Err(api_error!(StatusCode::NOT_FOUND)),
-        Err(e) => return Err(trace_error!("find user", StatusCode::NOT_FOUND)(e)),
-    };
-
-    user.delete(&state.database_connection)
+    let result = user::Entity::delete_by_id(id)
+        .exec(&state.database_connection)
         .await
         .map_err(trace_error!(
             "delete user",
             StatusCode::INTERNAL_SERVER_ERROR
         ))?;
+
+    if result.rows_affected == 0 {
+        return Err(api_error!(StatusCode::NOT_FOUND));
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -263,9 +279,14 @@ pub async fn update_user(
     let updated_user: user::Model = serde_json::from_value(user_json)
         .map_err(trace_error!("load patched model", StatusCode::BAD_REQUEST))?;
 
-    let mut active_model = updated_user.into_active_model().reset_all();
-    active_model.id = Unchanged(id);
-    active_model.password_hash = Unchanged(user.password_hash);
+    let active_model = user::ActiveModel {
+        id: Set(id),
+        name: Set(updated_user.name),
+        email: Set(updated_user.email),
+        password_hash: Set(user.password_hash),
+        user_type: Set(updated_user.user_type),
+        banned: Set(updated_user.banned),
+    };
 
     let updated_user = active_model.update(db).await.map_err(trace_error!(
         "update user",

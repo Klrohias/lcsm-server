@@ -14,9 +14,7 @@ use axum::{
 use axum_extra::extract::Query as ExtraQuery;
 use json_patch::{PatchOperation, patch as apply_json_patch};
 use sea_orm::{
-    ActiveModelTrait,
-    ActiveValue::{NotSet, Unchanged},
-    ColumnTrait, EntityTrait, IntoActiveModel, PaginatorTrait, QueryFilter,
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -37,7 +35,7 @@ pub fn get_routes(state_ref: &AppStateRef) -> Router {
 #[derive(Debug, Deserialize)]
 struct InstancesQuery {
     #[serde(rename = "id")]
-    pub ids: Option<Vec<u64>>,
+    pub ids: Option<Vec<i32>>,
 }
 
 #[instrument(skip(state))]
@@ -47,12 +45,11 @@ async fn get_instances(
     ExtraQuery(query): ExtraQuery<InstancesQuery>,
 ) -> Result<Json<PaginationResponse<instance::Model>>, StatusCode> {
     let db = &state.database;
-    let page = pagination.page.unwrap_or(1);
-    let page_size = pagination.page_size.unwrap_or(10);
+    let (page, page_size) = pagination.normalized();
 
-    let mut paginator = instance::Entity::find();
-    if query.ids.is_some() {
-        paginator = paginator.filter(instance::Column::Id.is_in(query.ids.unwrap()));
+    let mut paginator = instance::Entity::find().order_by_asc(instance::Column::Id);
+    if let Some(ids) = query.ids {
+        paginator = paginator.filter(instance::Column::Id.is_in(ids));
     }
 
     let paginator = paginator.paginate(db, page_size);
@@ -76,29 +73,41 @@ async fn get_instances(
 #[instrument(skip(state))]
 async fn get_instance(
     State(state): State<AppStateRef>,
-    Path(id): Path<u64>,
+    Path(id): Path<i32>,
 ) -> Result<Json<instance::Model>, StatusCode> {
     let db = &state.database;
-    let it = instance::Entity::find_by_id(
-        i32::try_from(id).map_err(trace_error!("parse id", StatusCode::BAD_REQUEST))?,
-    )
-    .one(db)
-    .await
-    .map_err(trace_error!("one from db", StatusCode::BAD_REQUEST))?
-    .ok_or(StatusCode::NOT_FOUND)?;
+    let it = instance::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .map_err(trace_error!("one from db", StatusCode::BAD_REQUEST))?
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(it))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateInstanceRequest {
+    pub name: String,
+    pub launch_command: String,
+    pub work_dir: String,
+    pub arguments: String,
+    pub use_shell: bool,
 }
 
 #[instrument(skip(state))]
 async fn create_instance(
     State(state): State<AppStateRef>,
-    Json(payload): Json<instance::Model>,
+    Json(payload): Json<CreateInstanceRequest>,
 ) -> Result<Json<instance::Model>, StatusCode> {
     let db = &state.database;
     let active = instance::ActiveModel {
-        id: NotSet, // empty the id
-        ..payload.into()
+        name: Set(payload.name),
+        launch_command: Set(payload.launch_command),
+        work_dir: Set(payload.work_dir),
+        arguments: Set(payload.arguments),
+        use_shell: Set(payload.use_shell),
+        ..Default::default()
     };
 
     let res = active
@@ -140,8 +149,14 @@ async fn update_instance(
     let updated: instance::Model = serde_json::from_value(value)
         .map_err(trace_error!("get new model", StatusCode::BAD_REQUEST))?;
 
-    let mut updated = updated.into_active_model().reset_all();
-    updated.id = Unchanged(id);
+    let updated = instance::ActiveModel {
+        id: Set(id),
+        name: Set(updated.name),
+        launch_command: Set(updated.launch_command),
+        work_dir: Set(updated.work_dir),
+        arguments: Set(updated.arguments),
+        use_shell: Set(updated.use_shell),
+    };
 
     let res = updated.update(db).await.map_err(trace_error!(
         "update to db",

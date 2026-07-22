@@ -43,13 +43,8 @@ pub async fn redirect_input(
     mut input: impl AsyncWrite + Unpin,
     mut receiver: mpsc::Receiver<BinarySequence>,
 ) -> Result<()> {
-    loop {
-        match receiver.recv().await {
-            Some(it) => {
-                input.write(&it).await?;
-            }
-            None => break,
-        }
+    while let Some(it) = receiver.recv().await {
+        input.write_all(&it).await?;
     }
 
     Ok(())

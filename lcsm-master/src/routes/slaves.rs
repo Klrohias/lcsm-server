@@ -8,8 +8,7 @@ use axum::{
 };
 use json_patch::Patch;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Unchanged, ColumnTrait, EntityTrait, IntoActiveModel,
-    ModelTrait, PaginatorTrait, QueryFilter, Set,
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
 };
 use serde::{Deserialize, Serialize};
 use tower::ServiceBuilder;
@@ -37,14 +36,14 @@ pub fn get_routes(state: &AppStateRef) -> Router {
     Router::new()
         // ---
         .route("/", get(get_slaves))
-        .route("/:id", get(get_slave))
+        .route("/{id}", get(get_slave))
         .route_layer(middleware::from_fn_with_state(
             state.auth_service.clone(),
             auth::jwt_middleware,
         ))
         // ---
         .route("/", post(create_slave))
-        .route("/:id", delete(delete_slave).patch(update_slave))
+        .route("/{id}", delete(delete_slave).patch(update_slave))
         .route_layer(
             ServiceBuilder::new()
                 .layer(auth_middleware.clone())
@@ -93,6 +92,7 @@ impl From<slave::Model> for SlaveResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSlaveRequest {
     pub name: String,
     pub description: String,
@@ -154,7 +154,7 @@ pub async fn get_slave(
 #[derive(Debug, Deserialize)]
 pub struct SlavesQuery {
     #[serde(rename = "id")]
-    pub ids: Option<Vec<u64>>,
+    pub ids: Option<Vec<i32>>,
 }
 
 #[instrument(skip(state))]
@@ -165,12 +165,11 @@ pub async fn get_slaves(
     Extension(claims): Extension<Claims>,
 ) -> Result<Json<PaginationResponse<SlaveResponse>>, Response> {
     let db = &state.database_connection;
-    let page = pagination.page.unwrap_or(1);
-    let page_size = pagination.page_size.unwrap_or(10);
+    let (page, page_size) = pagination.normalized();
 
-    let mut paginator = slave::Entity::find();
-    if query.ids.is_some() {
-        paginator = paginator.filter(slave::Column::Id.is_in(query.ids.unwrap()));
+    let mut paginator = slave::Entity::find().order_by_asc(slave::Column::Id);
+    if let Some(ids) = query.ids {
+        paginator = paginator.filter(slave::Column::Id.is_in(ids));
     }
 
     let paginator = paginator.paginate(db, page_size);
@@ -209,19 +208,17 @@ pub async fn delete_slave(
 ) -> Result<StatusCode, Response> {
     let db = &state.database_connection;
 
-    let slave = slave::Entity::find_by_id(id)
-        .one(db)
+    let result = slave::Entity::delete_by_id(id)
+        .exec(db)
         .await
         .map_err(trace_error!(
-            "find slave",
+            "delete slave",
             StatusCode::INTERNAL_SERVER_ERROR
-        ))?
-        .ok_or(api_error!(StatusCode::NOT_FOUND))?;
+        ))?;
 
-    slave.delete(db).await.map_err(trace_error!(
-        "delete slave",
-        StatusCode::INTERNAL_SERVER_ERROR
-    ))?;
+    if result.rows_affected == 0 {
+        return Err(api_error!(StatusCode::NOT_FOUND));
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -254,8 +251,13 @@ pub async fn update_slave(
     let updated_slave: slave::Model = serde_json::from_value(slave_json)
         .map_err(trace_error!("load patched model", StatusCode::BAD_REQUEST))?;
 
-    let mut active_model = updated_slave.into_active_model().reset_all();
-    active_model.id = Unchanged(id);
+    let active_model = slave::ActiveModel {
+        id: Set(id),
+        name: Set(updated_slave.name),
+        description: Set(updated_slave.description),
+        slave_token: Set(updated_slave.slave_token),
+        slave_url: Set(updated_slave.slave_url),
+    };
 
     let updated_slave = active_model.update(db).await.map_err(trace_error!(
         "update slave",

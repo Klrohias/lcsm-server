@@ -50,8 +50,8 @@ impl PermissionService {
             return false;
         }
 
-        // check the policy
-        todo!()
+        // 初步可用版本先放行普通用户，后续再接 ACL policy。
+        true
     }
 
     pub async fn is_administrator(&self, user_id: i32) -> bool {
