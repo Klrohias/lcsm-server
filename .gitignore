@@ -452,3 +452,7 @@ target
 # Ignore Visual Studio Code's launch.json
 .vscode/launch.json
 test-prog/
+
+
+# Test files
+data/
