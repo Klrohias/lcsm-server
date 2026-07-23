@@ -54,6 +54,22 @@ impl PermissionService {
         true
     }
 
+    pub async fn ensure_instance_permission(
+        &self,
+        user_id: i32,
+        slave_id: i32,
+        instance_id: i32,
+    ) -> Result<(), StatusCode> {
+        if self
+            .has_permission_to_instance(user_id, slave_id, instance_id)
+            .await
+        {
+            Ok(())
+        } else {
+            Err(StatusCode::FORBIDDEN)
+        }
+    }
+
     pub async fn is_administrator(&self, user_id: i32) -> bool {
         let result = self
             .user_service

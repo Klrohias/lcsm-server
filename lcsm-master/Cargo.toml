@@ -10,6 +10,7 @@ axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-extra = { version = "0.10.3", features = ["query"] }
 bcrypt = "0.15.1"
 bytes = "1.12.1"
+clap = { version = "4.5.53", features = ["derive"] }
 futures = "0.3.33"
 json-patch = "4.2.0"
 jsonwebtoken = "9.3.1"
@@ -30,6 +31,7 @@ tokio = { version = "1.53.1", features = [
     "process",
     "sync",
 ] }
+tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
 tower = "0.5.3"
 tower-http = { version = "0.6.11", features = ["cors", "auth"] }
 tracing = "0.1.44"

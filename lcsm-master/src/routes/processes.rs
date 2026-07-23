@@ -1,10 +1,10 @@
 use axum::{
-    Json, Router,
-    extract::{Path, Query, State},
+    Extension, Json, Router,
+    extract::{Path, Query, State, WebSocketUpgrade},
     http::StatusCode,
     middleware,
-    response::Response,
-    routing::{get, put},
+    response::{IntoResponse, Response},
+    routing::{any, get, put},
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -12,17 +12,18 @@ use tracing::instrument;
 
 use crate::{
     AppStateRef, api_error,
-    routes::slave_proxy::{find_slave, proxy_empty, proxy_text, slave_url},
-    services::{auth, permission_control},
-    trace_error,
+    routes::slave_proxy::{find_slave, proxy_empty, proxy_json, proxy_websocket},
+    services::auth::{self, Claims},
 };
 
 pub fn get_routes(state: &AppStateRef) -> Router {
-    let auth_middleware =
-        middleware::from_fn_with_state(state.auth_service.clone(), auth::jwt_middleware);
-    let admin_middleware = middleware::from_fn_with_state(
-        state.permission_service.clone(),
-        permission_control::admin_middleware,
+    let auth_middleware = middleware::from_fn_with_state(
+        state.auth_service.clone(),
+        auth::jwt_middleware,
+    );
+    let ws_auth_middleware = middleware::from_fn_with_state(
+        state.auth_service.clone(),
+        auth::jwt_header_or_query_middleware,
     );
 
     Router::new()
@@ -31,26 +32,46 @@ pub fn get_routes(state: &AppStateRef) -> Router {
             put(start_process).delete(kill_process).get(process_state),
         )
         .route("/{slave_id}/{instance_id}/logs", get(fetch_process_log))
-        .route_layer(
-            tower::ServiceBuilder::new()
-                .layer(auth_middleware)
-                .layer(admin_middleware),
-        )
+        .route_layer(auth_middleware)
+        .route("/{slave_id}/{instance_id}/terminal", any(terminal_ws_connect))
+        .route_layer(ws_auth_middleware)
         .with_state(state.clone())
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProcessStateResponse {
-    running: bool,
+    status: String,
+    is_running: bool,
+    pid: Option<u32>,
+    started_at: Option<u64>,
+    uptime_ms: Option<u64>,
+    cpu_percent: Option<f32>,
+    memory_bytes: Option<u64>,
+}
+
+async fn ensure_instance_permission(
+    state: &AppStateRef,
+    claims: &Claims,
+    slave_id: i32,
+    instance_id: i32,
+) -> Result<crate::entities::slave::Model, Response> {
+    state
+        .permission_service
+        .ensure_instance_permission(claims.id, slave_id, instance_id)
+        .await
+        .map_err(|status| api_error!(status))?;
+
+    find_slave(state, slave_id).await
 }
 
 #[instrument(skip(state))]
 async fn start_process(
     State(state): State<AppStateRef>,
+    Extension(claims): Extension<Claims>,
     Path((slave_id, instance_id)): Path<(i32, i32)>,
 ) -> Result<StatusCode, Response> {
-    let slave = find_slave(&state, slave_id).await?;
+    let slave = ensure_instance_permission(&state, &claims, slave_id, instance_id).await?;
     proxy_empty(
         &slave,
         Method::PUT,
@@ -63,9 +84,10 @@ async fn start_process(
 #[instrument(skip(state))]
 async fn kill_process(
     State(state): State<AppStateRef>,
+    Extension(claims): Extension<Claims>,
     Path((slave_id, instance_id)): Path<(i32, i32)>,
 ) -> Result<StatusCode, Response> {
-    let slave = find_slave(&state, slave_id).await?;
+    let slave = ensure_instance_permission(&state, &claims, slave_id, instance_id).await?;
     proxy_empty(
         &slave,
         Method::DELETE,
@@ -78,50 +100,64 @@ async fn kill_process(
 #[instrument(skip(state))]
 async fn process_state(
     State(state): State<AppStateRef>,
+    Extension(claims): Extension<Claims>,
     Path((slave_id, instance_id)): Path<(i32, i32)>,
 ) -> Result<Json<ProcessStateResponse>, Response> {
-    let slave = find_slave(&state, slave_id).await?;
-    let response = reqwest::Client::new()
-        .get(slave_url(&slave, &format!("/process/{instance_id}")))
-        .bearer_auth(&slave.slave_token)
-        .send()
-        .await
-        .map_err(trace_error!("request slave", StatusCode::BAD_GATEWAY))?;
-
-    match response.status() {
-        reqwest::StatusCode::OK => Ok(Json(ProcessStateResponse { running: true })),
-        reqwest::StatusCode::NOT_FOUND => Ok(Json(ProcessStateResponse { running: false })),
-        status => Err(api_error!(
-            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY)
-        )),
-    }
+    let slave = ensure_instance_permission(&state, &claims, slave_id, instance_id).await?;
+    let runtime = proxy_json(
+        &slave,
+        Method::GET,
+        &format!("/process/{instance_id}"),
+        None::<&()>,
+        None,
+    )
+    .await?;
+    Ok(Json(runtime))
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 struct LogQuery {
+    before: Option<u64>,
+    limit: Option<usize>,
     tail: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogChunkResponse {
+    content: String,
+    has_more: bool,
+    begin_offset: u64,
 }
 
 #[instrument(skip(state))]
 async fn fetch_process_log(
     State(state): State<AppStateRef>,
+    Extension(claims): Extension<Claims>,
     Path((slave_id, instance_id)): Path<(i32, i32)>,
     Query(query): Query<LogQuery>,
-) -> Result<String, Response> {
-    let slave = find_slave(&state, slave_id).await?;
-    let text = proxy_text(
+) -> Result<Json<LogChunkResponse>, Response> {
+    let slave = ensure_instance_permission(&state, &claims, slave_id, instance_id).await?;
+    let chunk: LogChunkResponse = proxy_json(
         &slave,
         Method::GET,
         &format!("/process/{instance_id}/logs"),
-        Option::<&()>::None,
+        Some(&query),
+        None,
     )
     .await?;
+    Ok(Json(chunk))
+}
 
-    if let Some(tail) = query.tail {
-        let mut lines = text.lines().rev().take(tail).collect::<Vec<_>>();
-        lines.reverse();
-        Ok(lines.join("\n"))
-    } else {
-        Ok(text)
-    }
+#[instrument(skip(state, ws))]
+async fn terminal_ws_connect(
+    State(state): State<AppStateRef>,
+    Extension(claims): Extension<Claims>,
+    Path((slave_id, instance_id)): Path<(i32, i32)>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, Response> {
+    let slave = ensure_instance_permission(&state, &claims, slave_id, instance_id).await?;
+    let path = format!("/process/{instance_id}/terminal");
+
+    Ok(ws.on_upgrade(move |socket| proxy_websocket(slave, path, socket)))
 }

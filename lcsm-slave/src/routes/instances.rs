@@ -90,7 +90,8 @@ async fn get_instance(
 struct CreateInstanceRequest {
     pub name: String,
     pub launch_command: String,
-    pub work_dir: String,
+    #[serde(default)]
+    pub work_dir: Option<String>,
     pub arguments: String,
     pub use_shell: bool,
 }
@@ -104,7 +105,7 @@ async fn create_instance(
     let active = instance::ActiveModel {
         name: Set(payload.name),
         launch_command: Set(payload.launch_command),
-        work_dir: Set(payload.work_dir),
+        work_dir: Set(payload.work_dir.unwrap_or_default()),
         arguments: Set(payload.arguments),
         use_shell: Set(payload.use_shell),
         ..Default::default()

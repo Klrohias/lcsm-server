@@ -1,6 +1,7 @@
 use std::{env, process::ExitCode, sync::Arc};
 
 use axum::Router;
+use clap::{Parser, Subcommand};
 use lcsm_slave::{
     AppState, AppStateRef,
     database::{build_database_connection, get_data_path},
@@ -12,6 +13,19 @@ use tower_http::{cors::CorsLayer, validate_request::ValidateRequestHeaderLayer};
 use tracing_subscriber::{filter::EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 const SERVICE_NAME: &str = "slave";
+
+#[derive(Parser)]
+#[command(name = "lcsm-slave")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    #[command(name = "internal-sync-entity")]
+    InternalSyncEntity,
+}
 
 fn build_services(app: Router) -> Router {
     let token = env::var("LCSM_SLAVE_TOKEN").unwrap_or_else(|_| "lcsm-slave-dev-token".to_owned());
@@ -28,7 +42,6 @@ fn build_routes(app: Router, state: &AppStateRef) -> Router {
 }
 
 async fn build_app() -> Router {
-    // build state
     let app_state = Arc::new(AppState::new(
         build_database_connection(SERVICE_NAME).await,
         get_data_path(SERVICE_NAME),
@@ -38,7 +51,6 @@ async fn build_app() -> Router {
         .ensure_path_created()
         .expect("ensure path created");
 
-    // build app
     let app = Router::new();
     let app = build_routes(app, &app_state);
     let app = build_services(app);
@@ -71,9 +83,9 @@ async fn sync_entity() -> anyhow::Result<()> {
 async fn main() -> ExitCode {
     init_tracing();
 
-    let result = match env::args().nth(1).as_deref() {
-        Some("internal-sync-entity") => sync_entity().await,
-        Some(command) => Err(anyhow::anyhow!("unknown command: {command}")),
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Some(Command::InternalSyncEntity) => sync_entity().await,
         None => serve().await,
     };
 

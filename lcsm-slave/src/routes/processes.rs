@@ -1,9 +1,9 @@
 use std::{ffi::OsString, path::PathBuf};
 
 use axum::{
-    Router,
+    Json, Router,
     extract::{
-        Path, Request, State, WebSocketUpgrade,
+        Path, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::StatusCode,
@@ -13,21 +13,22 @@ use axum::{
 
 use sea_orm::EntityTrait;
 use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt, SeekFrom},
     sync::{broadcast::error::RecvError, mpsc, oneshot},
     task::JoinError,
 };
-use tower::ServiceExt;
-use tower_http::services::ServeFile;
 use tracing::{Instrument, instrument};
 
 use crate::{
     AppStateRef,
     entities::instance,
     errors::trace_error,
-    services::{ProcessRef, ProcessState},
+    services::{ProcessRef, ProcessRuntimeStatus, ProcessState},
 };
 
 use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 
 pub fn get_routes(state_ref: &AppStateRef) -> Router {
     Router::new()
@@ -38,6 +39,32 @@ pub fn get_routes(state_ref: &AppStateRef) -> Router {
         .route("/{id}/terminal", any(terminal_ws_connect))
         .route("/{id}/logs", get(fetch_process_log))
         .with_state(state_ref.clone())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessStateResponse {
+    status: &'static str,
+    is_running: bool,
+    pid: Option<u32>,
+    started_at: Option<u64>,
+    uptime_ms: Option<u64>,
+    cpu_percent: Option<f32>,
+    memory_bytes: Option<u64>,
+}
+
+impl From<ProcessRuntimeStatus> for ProcessStateResponse {
+    fn from(value: ProcessRuntimeStatus) -> Self {
+        Self {
+            status: value.status.as_str(),
+            is_running: value.is_running(),
+            pid: value.pid,
+            started_at: value.started_at,
+            uptime_ms: value.uptime_ms,
+            cpu_percent: value.cpu_percent,
+            memory_bytes: value.memory_bytes,
+        }
+    }
 }
 
 async fn get_alive_process(state: &AppStateRef, id: u64) -> Option<ProcessRef> {
@@ -86,14 +113,20 @@ async fn start_process(
         .collect::<Vec<OsString>>();
 
     let work_dir = {
-        let path = PathBuf::from(&the_instance.work_dir);
-        if path.is_absolute() {
-            path
+        let wd = the_instance.work_dir.trim();
+        if wd.is_empty() {
+            // default: the instance's own data directory
+            state.instances_path.join(the_instance.id.to_string())
         } else {
-            state
-                .instances_path
-                .join(the_instance.id.to_string())
-                .join(path)
+            let path = PathBuf::from(wd);
+            if path.is_absolute() {
+                path
+            } else {
+                state
+                    .instances_path
+                    .join(the_instance.id.to_string())
+                    .join(path)
+            }
         }
     };
 
@@ -138,12 +171,21 @@ async fn kill_process(
 async fn process_state(
     State(state): State<AppStateRef>,
     Path(id): Path<u64>,
-) -> Result<(), StatusCode> {
-    get_alive_process(&state, id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
+) -> Result<Json<ProcessStateResponse>, StatusCode> {
+    instance::Entity::find_by_id(i32::try_from(id).map_err(trace_error!(
+        "parse id",
+        StatusCode::BAD_REQUEST
+    ))?)
+    .one(&state.database)
+    .await
+    .map_err(trace_error!(
+        "one from db",
+        StatusCode::INTERNAL_SERVER_ERROR
+    ))?
+    .ok_or(StatusCode::NOT_FOUND)?;
 
-    Ok(())
+    let runtime = state.process_manager.get_runtime_status(id).await;
+    Ok(Json(runtime.into()))
 }
 
 #[instrument(skip(state))]
@@ -181,7 +223,7 @@ async fn terminal_ws_handler(socket: WebSocket, id: u64, process: ProcessRef) {
 
     tracing::info!("Socket for process {} opened", id);
 
-    let send_task = tokio::spawn(
+    let mut send_task = tokio::spawn(
         async move {
             use anyhow::Ok;
 
@@ -204,7 +246,7 @@ async fn terminal_ws_handler(socket: WebSocket, id: u64, process: ProcessRef) {
         .instrument(tracing::info_span!("send task")),
     );
 
-    let output_task = tokio::spawn(
+    let mut output_task = tokio::spawn(
         async move {
             use anyhow::Ok;
 
@@ -221,7 +263,7 @@ async fn terminal_ws_handler(socket: WebSocket, id: u64, process: ProcessRef) {
                     if let RecvError::Lagged(_) = e {
                         continue;
                     } else {
-                        break Err(e.into());
+                        break Ok(());
                     }
                 }
 
@@ -231,43 +273,56 @@ async fn terminal_ws_handler(socket: WebSocket, id: u64, process: ProcessRef) {
         .instrument(tracing::info_span!("output task")),
     );
 
-    let input_task = { process.read().await.get_stdin() }.map(|sender| {
-        tokio::spawn(
-            async move {
-                use anyhow::Ok;
-                // redirect stdin
-                while let Some(message) = socket_read.next().await {
-                    if let Err(e) = message {
-                        return Err(e.into());
-                    }
+    let mut input_task = tokio::spawn(
+        async move {
+            use anyhow::Ok;
 
-                    let message = message.unwrap();
+            let process_write = process.read().await;
+            let stdin = process_write.get_stdin();
+            drop(process_write);
 
-                    // send
-                    if let Err(e) = sender.send(message.into_data().to_vec()).await {
-                        return Err(e.into());
-                    }
-                }
-
-                Ok(())
+            if stdin.is_none() {
+                return Ok(());
             }
-            .instrument(tracing::info_span!("input task")),
-        )
-    });
+            let stdin = stdin.unwrap();
+
+            while let Some(message) = socket_read.next().await {
+                let message = message?;
+                let Some(data) = terminal_input_bytes(message) else {
+                    continue;
+                };
+
+                stdin.send(data).await?;
+            }
+
+            Ok(())
+        }
+        .instrument(tracing::info_span!("input task")),
+    );
 
     let error = tokio::select! {
-        r = output_task => just_get_error(r),
-        r = input_task.unwrap(), if input_task.is_some() => just_get_error(r)
+        r = &mut send_task => just_get_error(r),
+        r = &mut output_task => just_get_error(r),
+        r = &mut input_task => just_get_error(r),
     };
 
     if let Some(err) = error {
-        tracing::error!("Stdio for process {} closed with error: {}", id, err);
+        tracing::error!("Socket for process {} closed with error: {}", id, err);
     }
 
     // close connection
     _ = exit_sender.send(());
     _ = send_task.await;
     tracing::info!("Socket for process {} closed", id);
+}
+
+fn terminal_input_bytes(message: Message) -> Option<Vec<u8>> {
+    match message {
+        Message::Text(text) => Some(text.as_bytes().to_vec()),
+        Message::Binary(data) => Some(data.to_vec()),
+        Message::Close(_) => None,
+        Message::Ping(_) | Message::Pong(_) => None,
+    }
 }
 
 fn just_get_error(r: Result<Result<(), anyhow::Error>, JoinError>) -> Option<anyhow::Error> {
@@ -280,16 +335,68 @@ fn just_get_error(r: Result<Result<(), anyhow::Error>, JoinError>) -> Option<any
     }
 }
 
-#[instrument(skip(state, request))]
-async fn fetch_process_log(
-    Path(id): Path<u64>,
-    State(state): State<AppStateRef>,
-    request: Request,
-) -> Result<impl IntoResponse, StatusCode> {
-    let log_path = state.log_manager.get_log_path(id);
-    if !log_path.exists() {
-        return Err(StatusCode::NOT_FOUND);
-    }
+#[derive(Debug, Deserialize)]
+struct LogQuery {
+    before: Option<u64>,
+    limit: Option<usize>,
+    tail: Option<usize>,
+}
 
-    Ok(ServeFile::new(log_path).oneshot(request).await)
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogChunkResponse {
+    content: String,
+    has_more: bool,
+    begin_offset: u64,
+}
+
+#[instrument(skip(state))]
+async fn fetch_process_log(
+    State(state): State<AppStateRef>,
+    Path(id): Path<u64>,
+    Query(query): Query<LogQuery>,
+) -> Result<Json<LogChunkResponse>, StatusCode> {
+    let log_path = state.log_path.join(format!("{id}.log"));
+    let mut file = File::open(&log_path).await.map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+        _ => trace_error!("open process log", StatusCode::INTERNAL_SERVER_ERROR)(error),
+    })?;
+
+    let file_size = file
+        .metadata()
+        .await
+        .map_err(trace_error!("read process log metadata", StatusCode::INTERNAL_SERVER_ERROR))?
+        .len();
+
+    let limit = query.limit.unwrap_or(8 * 1024).clamp(1, 256 * 1024);
+    let before = query.before.unwrap_or(file_size).min(file_size);
+    let start = if let Some(tail) = query.tail {
+        file_size.saturating_sub(u64::try_from(tail).unwrap_or(u64::MAX))
+    } else {
+        before.saturating_sub(u64::try_from(limit).unwrap_or(u64::MAX))
+    };
+
+    file.seek(SeekFrom::Start(start))
+        .await
+        .map_err(trace_error!("seek process log", StatusCode::INTERNAL_SERVER_ERROR))?;
+
+    let to_read = usize::try_from(before.saturating_sub(start))
+        .unwrap_or(limit)
+        .min(limit);
+    let mut buf = vec![0; to_read];
+    let read = file
+        .read(&mut buf)
+        .await
+        .map_err(trace_error!("read process log", StatusCode::INTERNAL_SERVER_ERROR))?;
+    buf.truncate(read);
+
+    let content = String::from_utf8_lossy(&buf).into_owned();
+    let begin_offset = start;
+    let has_more = begin_offset > 0;
+
+    Ok(Json(LogChunkResponse {
+        content,
+        has_more,
+        begin_offset,
+    }))
 }

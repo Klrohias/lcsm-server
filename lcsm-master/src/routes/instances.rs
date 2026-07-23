@@ -1,5 +1,5 @@
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     middleware,
@@ -8,24 +8,21 @@ use axum::{
 };
 use reqwest::Method;
 use sea_orm::EntityTrait;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
 
 use crate::{
     AppStateRef, api_error,
     entities::slave,
-    services::{auth, permission_control},
+    routes::slave_proxy::{find_slave, proxy_empty, proxy_json},
+    services::auth::{self, Claims},
     trace_error,
 };
 
 pub fn get_routes(state: &AppStateRef) -> Router {
     let auth_middleware =
         middleware::from_fn_with_state(state.auth_service.clone(), auth::jwt_middleware);
-    let admin_middleware = middleware::from_fn_with_state(
-        state.permission_service.clone(),
-        permission_control::admin_middleware,
-    );
 
     Router::new()
         .route("/", get(get_instances))
@@ -36,11 +33,7 @@ pub fn get_routes(state: &AppStateRef) -> Router {
                 .patch(update_instance)
                 .delete(delete_instance),
         )
-        .route_layer(
-            tower::ServiceBuilder::new()
-                .layer(auth_middleware)
-                .layer(admin_middleware),
-        )
+        .route_layer(auth_middleware)
         .with_state(state.clone())
 }
 
@@ -76,87 +69,19 @@ struct InstanceResponse {
     instance: InstanceModel,
 }
 
-async fn find_slave(state: &AppStateRef, id: i32) -> Result<slave::Model, Response> {
-    slave::Entity::find_by_id(id)
-        .one(&state.database_connection)
+async fn ensure_instance_permission(
+    state: &AppStateRef,
+    claims: &Claims,
+    slave_id: i32,
+    instance_id: i32,
+) -> Result<slave::Model, Response> {
+    state
+        .permission_service
+        .ensure_instance_permission(claims.id, slave_id, instance_id)
         .await
-        .map_err(trace_error!(
-            "find slave",
-            StatusCode::INTERNAL_SERVER_ERROR
-        ))?
-        .ok_or(api_error!(StatusCode::NOT_FOUND))
-}
+        .map_err(|status| api_error!(status))?;
 
-fn slave_url(slave: &slave::Model, path: &str) -> String {
-    format!(
-        "{}/{}",
-        slave.slave_url.trim_end_matches('/'),
-        path.trim_start_matches('/')
-    )
-}
-
-async fn proxy_json<T: DeserializeOwned>(
-    slave: &slave::Model,
-    method: Method,
-    path: &str,
-    query: Option<&ProxyQuery>,
-    body: Option<Value>,
-) -> Result<T, Response> {
-    let client = reqwest::Client::new();
-    let mut request = client
-        .request(method, slave_url(slave, path))
-        .bearer_auth(&slave.slave_token);
-
-    if let Some(query) = query {
-        request = request.query(query);
-    }
-    if let Some(body) = body {
-        request = request.json(&body);
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(trace_error!("request slave", StatusCode::BAD_GATEWAY))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(api_error!(
-            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY)
-        ));
-    }
-
-    response.json::<T>().await.map_err(trace_error!(
-        "decode slave response",
-        StatusCode::BAD_GATEWAY
-    ))
-}
-
-async fn proxy_empty(
-    slave: &slave::Model,
-    method: Method,
-    path: &str,
-    body: Option<Value>,
-) -> Result<StatusCode, Response> {
-    let client = reqwest::Client::new();
-    let mut request = client
-        .request(method, slave_url(slave, path))
-        .bearer_auth(&slave.slave_token);
-    if let Some(body) = body {
-        request = request.json(&body);
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(trace_error!("request slave", StatusCode::BAD_GATEWAY))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(api_error!(
-            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY)
-        ));
-    }
-
-    Ok(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK))
+    find_slave(state, slave_id).await
 }
 
 #[instrument(skip(state))]
@@ -199,14 +124,15 @@ async fn get_instances(
 #[instrument(skip(state))]
 async fn get_instance(
     State(state): State<AppStateRef>,
+    Extension(claims): Extension<Claims>,
     Path((slave_id, instance_id)): Path<(i32, i32)>,
 ) -> Result<Json<InstanceResponse>, Response> {
-    let slave = find_slave(&state, slave_id).await?;
+    let slave = ensure_instance_permission(&state, &claims, slave_id, instance_id).await?;
     let instance = proxy_json(
         &slave,
         Method::GET,
         &format!("/instance/{instance_id}"),
-        None,
+        None::<&ProxyQuery>,
         None,
     )
     .await?;
@@ -221,22 +147,30 @@ async fn create_instance(
     Json(payload): Json<Value>,
 ) -> Result<Json<InstanceModel>, Response> {
     let slave = find_slave(&state, slave_id).await?;
-    let instance = proxy_json(&slave, Method::PUT, "/instance", None, Some(payload)).await?;
+    let instance = proxy_json(
+        &slave,
+        Method::PUT,
+        "/instance",
+        None::<&ProxyQuery>,
+        Some(payload),
+    )
+    .await?;
     Ok(Json(instance))
 }
 
 #[instrument(skip(state, patch))]
 async fn update_instance(
     State(state): State<AppStateRef>,
+    Extension(claims): Extension<Claims>,
     Path((slave_id, instance_id)): Path<(i32, i32)>,
     Json(patch): Json<Value>,
 ) -> Result<Json<InstanceModel>, Response> {
-    let slave = find_slave(&state, slave_id).await?;
+    let slave = ensure_instance_permission(&state, &claims, slave_id, instance_id).await?;
     let instance = proxy_json(
         &slave,
         Method::PATCH,
         &format!("/instance/{instance_id}"),
-        None,
+        None::<&ProxyQuery>,
         Some(patch),
     )
     .await?;
@@ -246,9 +180,10 @@ async fn update_instance(
 #[instrument(skip(state))]
 async fn delete_instance(
     State(state): State<AppStateRef>,
+    Extension(claims): Extension<Claims>,
     Path((slave_id, instance_id)): Path<(i32, i32)>,
 ) -> Result<StatusCode, Response> {
-    let slave = find_slave(&state, slave_id).await?;
+    let slave = ensure_instance_permission(&state, &claims, slave_id, instance_id).await?;
     proxy_empty(
         &slave,
         Method::DELETE,

@@ -2,6 +2,7 @@ use std::{env, process::ExitCode, sync::Arc};
 
 use axum::Router;
 use bcrypt::{DEFAULT_COST, hash};
+use clap::{Parser, Subcommand};
 use lcsm_master::{
     AppState, AppStateRef,
     database::build_database_connection,
@@ -18,6 +19,24 @@ use typed_container::Container;
 
 const SERVICE_NAME: &str = "master";
 
+#[derive(Parser)]
+#[command(name = "lcsm-master")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    #[command(name = "internal-sync-entity")]
+    InternalSyncEntity,
+    #[command(name = "addadmin", alias = "add-admin")]
+    AddAdmin {
+        user: String,
+        pass: String,
+    },
+}
+
 fn build_auth_service() -> AuthServiceRef {
     AuthService::new(env::var("LCSM_JWT_SECRET").unwrap_or_else(|_| "lcsm-dev-secret".to_owned()))
 }
@@ -31,7 +50,6 @@ fn build_routes(app: Router, state: &AppStateRef) -> Router {
 }
 
 async fn build_app() -> Router {
-    // build state
     let c = Container::new();
     c.register_service(build_database_connection(SERVICE_NAME).await);
     c.register_service(build_auth_service());
@@ -40,7 +58,6 @@ async fn build_app() -> Router {
     c.register_constructor(|c| Arc::new(AppState::from(c)));
 
     let app_state = c.get();
-    // build app
     let app = Router::new();
     let app = build_routes(app, &app_state);
     let app = build_service(app);
@@ -114,17 +131,11 @@ async fn add_admin(name: String, password: String) -> anyhow::Result<()> {
 async fn main() -> ExitCode {
     init_tracing();
 
-    let result = match env::args().collect::<Vec<_>>().as_slice() {
-        [_, command] if command == "internal-sync-entity" => sync_entity().await,
-        [_, command, name, password] if command == "addadmin" => {
-            add_admin(name.clone(), password.clone()).await
-        }
-        [_, command] if command == "addadmin" => {
-            Err(anyhow::anyhow!("usage: lcsm-master addadmin <user> <pass>"))
-        }
-        [_, command, ..] => Err(anyhow::anyhow!("unknown command: {command}")),
-        [_] => serve().await,
-        [] => serve().await,
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Some(Command::InternalSyncEntity) => sync_entity().await,
+        Some(Command::AddAdmin { user, pass }) => add_admin(user, pass).await,
+        None => serve().await,
     };
 
     match result {

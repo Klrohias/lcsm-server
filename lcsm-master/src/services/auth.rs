@@ -56,6 +56,54 @@ impl AuthService {
 
         self.encode_claims(claims)
     }
+
+    fn decode_claims_response(&self, token: &str) -> Result<Claims, Response> {
+        self.decode_claims(token)
+            .map_err(trace_error!("decode jwt claims", StatusCode::UNAUTHORIZED))
+    }
+
+    fn access_token_from_headers<'a>(headers: &'a HeaderMap) -> Result<Option<&'a str>, Response> {
+        let Some(auth_header) = headers.get("authorization") else {
+            return Ok(None);
+        };
+
+        let auth_header = auth_header.to_str().map_err(trace_error!(
+            "decode authorization header",
+            StatusCode::UNAUTHORIZED
+        ))?;
+
+        if !auth_header.starts_with("Bearer ") {
+            return Err(api_error!(StatusCode::UNAUTHORIZED));
+        }
+
+        Ok(Some(&auth_header[7..]))
+    }
+
+    fn access_token_from_query(query: Option<&str>) -> Option<&str> {
+        query?.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == "accessToken" && !value.is_empty()).then_some(value)
+        })
+    }
+
+    pub fn decode_claims_from_headers(&self, headers: &HeaderMap) -> Result<Claims, Response> {
+        let token = Self::access_token_from_headers(headers)?
+            .ok_or(api_error!(StatusCode::UNAUTHORIZED))?;
+        self.decode_claims_response(token)
+    }
+
+    pub fn decode_claims_from_headers_or_query(
+        &self,
+        headers: &HeaderMap,
+        query: Option<&str>,
+    ) -> Result<Claims, Response> {
+        if let Some(token) = Self::access_token_from_headers(headers)? {
+            return self.decode_claims_response(token);
+        }
+
+        let token = Self::access_token_from_query(query).ok_or(api_error!(StatusCode::UNAUTHORIZED))?;
+        self.decode_claims_response(token)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -71,24 +119,19 @@ pub async fn jwt_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, Response> {
-    let auth_header = headers
-        .get("authorization")
-        .ok_or(api_error!(StatusCode::UNAUTHORIZED))?
-        .to_str()
-        .map_err(trace_error!(
-            "decode authorization header",
-            StatusCode::UNAUTHORIZED
-        ))?;
+    let claims = state.decode_claims_from_headers(&headers)?;
 
-    if !auth_header.starts_with("Bearer ") {
-        return Err(api_error!(StatusCode::UNAUTHORIZED));
-    }
+    request.extensions_mut().insert(claims);
+    Ok(next.run(request).await)
+}
 
-    let token = &auth_header[7..];
-
-    let claims = state
-        .decode_claims(token)
-        .map_err(trace_error!("decode jwt claims", StatusCode::UNAUTHORIZED))?;
+pub async fn jwt_header_or_query_middleware(
+    State(state): State<AuthServiceRef>,
+    headers: HeaderMap,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, Response> {
+    let claims = state.decode_claims_from_headers_or_query(&headers, request.uri().query())?;
 
     request.extensions_mut().insert(claims);
     Ok(next.run(request).await)
